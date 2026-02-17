@@ -1,0 +1,1 @@
+source /home/wsmpvzip/nodevenv/steve-ai-phase-one/22/bin/activate && cd /home/wsmpvzip/steve-ai-phase-one

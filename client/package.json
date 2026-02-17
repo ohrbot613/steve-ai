@@ -1,0 +1,42 @@
+{
+  "name": "steve-ai-client",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && npm run postbuild",
+    "postbuild": "cp dist/index.html ../views/ && cp -r dist/assets/* ../public/assets/ && cp dist/vite.svg ../public/ 2>/dev/null || true",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@copilotkit/react-core": "^1.51.2",
+    "@copilotkit/react-ui": "^1.51.2",
+    "@sentry/react": "^10.38.0",
+    "cedar-os": "^0.1.23",
+    "html2canvas": "^1.4.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.11.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@tailwindcss/postcss": "^4.1.18",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "autoprefixer": "10.4.23",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "postcss": "8.5.6",
+    "sass": "^1.97.1",
+    "tailwindcss": "4.1.18",
+    "vite": "^7.2.4"
+  }
+}

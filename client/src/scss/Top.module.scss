@@ -1,0 +1,232 @@
+.topWrapper {
+    width: 100%;
+    background-color: #fff;
+    border-bottom: rgb(226 232 240) .1rem solid;
+}
+
+.top {
+    width: 100%;
+    padding: 1.4rem 4rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    &Left {
+        display: flex;
+        align-items: center;
+        gap: 3rem;
+
+        &>p {
+            font-size: 2rem;
+            font-weight: 500;
+        }
+
+        &Links {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        &Link {
+            display: flex;
+            align-items: center;
+            gap: .6rem;
+            padding: .6rem 1.2rem;
+            border-radius: .6rem;
+            transition: .2s ease-in-out background-color;
+            cursor: pointer;
+
+            &:hover {
+                background-color: rgb(241 245 249);
+            }
+
+            &Active {
+                background-color: rgb(241 245 249);
+            }
+
+            &>svg {
+                width: auto;
+                height: 1.8rem;
+
+                &>path {
+                    stroke: rgb(62, 75, 95);
+                }
+
+                &>rect {
+                    stroke: rgb(62, 75, 95);
+                }
+
+                &>line {
+                    stroke: rgb(62, 75, 95);
+                }
+            }
+
+            &>p {
+                font-size: 1.5rem;
+                color: rgb(62, 75, 95);
+                font-weight: 600;
+            }
+        }
+
+    }
+
+
+    &Right {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+
+        .userBalance {
+            display: flex;
+            flex-direction: row;
+            align-items: baseline;
+            gap: 0.75rem;
+
+            .userBalanceLabel {
+                font-size: 1.5rem;
+                color: rgb(100, 116, 139);
+            }
+
+            .userBalanceAmount {
+                font-size: 1.5rem;
+                font-weight: 600;
+                color: rgb(30, 41, 59);
+            }
+        }
+
+        &>button,
+        .reportErrorButton {
+            display: flex;
+            align-items: center;
+            gap: .6rem;
+            padding: .6rem 1.2rem;
+            border-radius: .6rem;
+            background-color: transparent;
+            cursor: pointer;
+            transition: .2s ease-in-out background-color;
+
+            &:hover {
+                background-color: rgb(241 245 249);
+            }
+
+            &>svg {
+                width: auto;
+                height: 1.8rem;
+
+                &>path {
+                    stroke: rgb(62, 75, 95);
+                }
+
+                & line {
+                    stroke: rgb(62, 75, 95);
+                    fill: rgb(62, 75, 95);
+                }
+            }
+
+            &>p {
+                font-size: 1.5rem;
+                color: rgb(62, 75, 95);
+                font-weight: 600;
+            }
+        }
+    }
+
+}
+
+.navDivider {
+    height: 0;
+    border-bottom: 1px solid rgb(226 232 240);
+    margin: 0 4rem;
+}
+
+.subNav {
+    padding: 6px 4rem 1rem 4rem;
+    margin-top: 4px;
+    margin-left: calc(2rem + 3rem);
+    // offset to align with the main nav links area
+
+    &Links {
+        display: flex;
+        align-items: center;
+        gap: .6rem;
+    }
+
+    &Link {
+        display: flex;
+        align-items: center;
+        gap: .5rem;
+        padding: .5rem 1rem;
+        border-radius: .5rem;
+        transition: .2s ease-in-out background-color;
+        cursor: pointer;
+
+        &:hover {
+            background-color: rgb(241 245 249);
+        }
+
+        &Active {
+            background-color: rgb(226 232 240);
+        }
+
+        &>svg {
+            width: auto;
+            height: 1.5rem;
+
+            &>path {
+                stroke: rgb(100, 116, 139);
+            }
+        }
+
+        &>p {
+            font-size: 1.3rem;
+            color: rgb(100, 116, 139);
+            font-weight: 500;
+        }
+    }
+}
+
+.reloadBlockOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(15, 23, 42, 0.92);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.reloadBlockContent {
+    text-align: center;
+    max-width: 40rem;
+}
+
+.reloadBlockSpinner {
+    width: 4rem;
+    height: 4rem;
+    border: 0.4rem solid rgb(226 232 240);
+    border-top-color: rgb(59 130 246);
+    border-radius: 50%;
+    animation: reloadBlockSpin 0.9s linear infinite;
+    margin: 0 auto 2rem;
+}
+
+.reloadBlockTitle {
+    margin: 0 0 0.8rem;
+    font-size: 2rem;
+    font-weight: 600;
+    color: #fff;
+}
+
+.reloadBlockMessage {
+    margin: 0;
+    font-size: 1.5rem;
+    line-height: 1.5;
+    color: rgb(203 213 225);
+}
+
+@keyframes reloadBlockSpin {
+    to {
+        transform: rotate(360deg);
+    }
+}

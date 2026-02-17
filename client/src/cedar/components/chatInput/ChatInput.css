@@ -1,0 +1,40 @@
+/* Tiptap placeholder styles */
+.ProseMirror p.is-editor-empty:first-child::before {
+	content: attr(data-placeholder);
+	float: left;
+	color: #9ca3af; /* text-gray-400 */
+	pointer-events: none;
+	height: 0;
+}
+
+.dark .ProseMirror p.is-editor-empty:first-child::before {
+	color: #6b7280; /* text-gray-500 */
+}
+
+/* Ensure proper line height for multi-line support and word wrapping */
+.ProseMirror {
+	min-height: 2.5rem;
+	line-height: 1.6;
+	word-wrap: break-word;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+	white-space: pre-wrap;
+	padding: 0.5rem 0;
+	font-size: 1.4rem;
+}
+
+/* Style for hard breaks */
+.ProseMirror .hard-break {
+	display: block;
+	height: 0;
+}
+
+/* Improved focus styles */
+.ProseMirror:focus {
+	outline: none;
+}
+
+/* Better text selection */
+.ProseMirror ::selection {
+	background-color: rgba(102, 126, 234, 0.2);
+}

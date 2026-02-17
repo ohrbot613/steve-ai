@@ -1,0 +1,53 @@
+{
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.12",
+    "@copilotkit/runtime": "^1.51.2",
+    "@copilotkit/shared": "^1.51.2",
+    "@langchain/core": "^1.1.8",
+    "@langchain/langgraph": "^1.1.2",
+    "@langchain/openai": "^1.2.0",
+    "@openrouter/sdk": "^0.2.9",
+    "@sentry/node": "^10.38.0",
+    "axios": "^1.13.2",
+    "bcrypt": "^6.0.0",
+    "better-sse": "^0.16.1",
+    "cookie-parser": "^1.4.7",
+    "csv-parse": "^6.1.0",
+    "currency-symbol-map": "^5.1.0",
+    "dotenv": "^17.2.3",
+    "ejs": "^3.1.10",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "file-type": "^21.1.1",
+    "helmet": "^8.1.0",
+    "json2csv": "^6.0.0-alpha.2",
+    "jsonwebtoken": "^9.0.3",
+    "langchain": "^1.1.16",
+    "langfuse": "^3.38.6",
+    "mongoose": "^9.0.2",
+    "multer": "^2.0.2",
+    "node-sass": "^9.0.0",
+    "nodemailer": "^7.0.12",
+    "pdf-parse": "^2.4.5",
+    "simple-oauth2": "^5.1.0",
+    "uuid": "^13.0.0",
+    "xero-node": "^13.4.0",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.5"
+  },
+  "name": "steve-ai",
+  "version": "1.1.0",
+  "description": "Steve AI - Intelligent PDF Automation",
+  "main": "app.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "pdfkit": "^0.17.2"
+  }
+}

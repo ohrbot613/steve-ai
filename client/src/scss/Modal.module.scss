@@ -1,0 +1,447 @@
+.modalOverlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+    padding: 2rem;
+}
+
+.modalContent {
+    background-color: #fff;
+    border-radius: 1.2rem;
+    width: 100%;
+    max-width: 50rem;
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+.modalHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 2rem 2.4rem;
+    border-bottom: 0.1rem solid rgb(226 232 240);
+
+    &>h2 {
+        font-size: 2rem;
+        font-weight: 600;
+        color: #1f2937;
+        margin: 0;
+    }
+}
+
+.closeButton {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 3.2rem;
+    height: 3.2rem;
+    border-radius: 0.6rem;
+    background-color: transparent;
+    border: none;
+    cursor: pointer;
+    transition: 0.2s ease-in-out background-color;
+    color: #6b7280;
+
+    &:hover {
+        background-color: rgb(241 245 249);
+        color: #374151;
+    }
+
+    &>svg {
+        width: 2rem;
+        height: 2rem;
+    }
+}
+
+.modalBody {
+    padding: 2.4rem;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.formGroup {
+    margin-bottom: 2rem;
+
+    &:last-of-type {
+        margin-bottom: 0;
+    }
+
+    &>label {
+        display: block;
+        font-size: 1.4rem;
+        font-weight: 500;
+        color: #374151;
+        margin-bottom: 0.8rem;
+    }
+
+    &>input[type="text"],
+    &>input[type="email"] {
+        width: 100%;
+        padding: 1rem 1.2rem;
+        border: 0.1rem solid #e5e7eb;
+        border-radius: 0.8rem;
+        font-size: 1.5rem;
+        color: #1f2937;
+        background-color: #fff;
+        transition: border-color 0.2s;
+
+        &:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+
+        &::placeholder {
+            color: #9ca3af;
+        }
+
+        &:disabled {
+            background-color: #f9fafb;
+            cursor: not-allowed;
+        }
+    }
+}
+
+.fileUploadZone {
+    position: relative;
+    margin-top: 0.4rem;
+    padding: 1.6rem;
+    border: 0.2rem dashed #d1d5db;
+    border-radius: 0.8rem;
+    background-color: #f9fafb;
+    transition: border-color 0.2s, background-color 0.2s;
+
+    &:hover {
+        border-color: #9ca3af;
+        background-color: #f3f4f6;
+    }
+
+    &:focus-within {
+        border-color: #3b82f6;
+        background-color: #eff6ff;
+    }
+}
+
+.fileUploadInput {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+    font-size: 0;
+
+    &:disabled {
+        cursor: not-allowed;
+    }
+}
+
+.fileUploadLabel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    pointer-events: none;
+    min-height: 4.8rem;
+
+    &Icon {
+        width: 2.4rem;
+        height: 2.4rem;
+        color: #6b7280;
+    }
+
+    &Text {
+        font-size: 1.4rem;
+        font-weight: 500;
+        color: #374151;
+    }
+
+    &Hint {
+        font-size: 1.3rem;
+        color: #6b7280;
+    }
+}
+
+.fileUploadList {
+    margin-top: 1.2rem;
+    padding-left: 1.6rem;
+    font-size: 1.4rem;
+    color: #374151;
+    list-style: none;
+
+    &Item {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.6rem 0;
+        border-bottom: 0.1rem solid #f3f4f6;
+
+        &:last-child {
+            border-bottom: none;
+        }
+    }
+
+    &ItemName {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &ItemSize {
+        flex-shrink: 0;
+        font-size: 1.3rem;
+        color: #6b7280;
+    }
+
+    &Overflow {
+        padding: 0.6rem 0;
+        font-size: 1.3rem;
+        color: #6b7280;
+    }
+}
+
+.passwordInput {
+    position: relative;
+    display: flex;
+    align-items: center;
+    border: 0.1rem solid #e5e7eb;
+    border-radius: 0.8rem;
+    overflow: hidden;
+    background-color: #fff;
+    transition: border-color 0.2s;
+
+    &:focus-within {
+        border-color: #3b82f6;
+    }
+
+    &>input {
+        flex: 1;
+        padding: 1rem 1.2rem;
+        border: none;
+        outline: none;
+        font-size: 1.5rem;
+        color: #1f2937;
+
+        &::placeholder {
+            color: #9ca3af;
+        }
+    }
+
+    .passwordToggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 1.2rem;
+        background-color: transparent;
+        border: none;
+        cursor: pointer;
+        color: #6b7280;
+        transition: color 0.2s;
+
+        &:hover {
+            color: #374151;
+        }
+
+        &>svg {
+            width: 2rem;
+            height: 2rem;
+        }
+    }
+}
+
+.helperText {
+    font-size: 1.3rem;
+    color: #6b7280;
+    margin-top: 0.6rem;
+}
+
+.errorMessage {
+    background-color: #fee2e2;
+    color: #dc2626;
+    padding: 1.2rem 1.6rem;
+    border-radius: 0.8rem;
+    font-size: 1.4rem;
+    margin-bottom: 2rem;
+    border: 0.1rem solid #fecaca;
+}
+
+.successMessage {
+    background-color: #d1fae5;
+    color: #065f46;
+    padding: 1.2rem 1.6rem;
+    border-radius: 0.8rem;
+    font-size: 1.4rem;
+    margin-bottom: 2rem;
+    border: 0.1rem solid #6ee7b7;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+
+    &::before {
+        content: '✓';
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.6rem;
+        height: 1.6rem;
+        min-width: 1.6rem;
+        min-height: 1.6rem;
+        background-color: #059669;
+        color: #fff;
+        border-radius: 50%;
+        font-weight: bold;
+        font-size: 1rem;
+        flex-shrink: 0;
+        aspect-ratio: 1 / 1;
+    }
+}
+
+.infoBox {
+    display: flex;
+    gap: 1.2rem;
+    padding: 1.6rem;
+    background-color: #f0f9ff;
+    border: 0.1rem solid #bae6fd;
+    border-radius: 0.8rem;
+    margin-bottom: 2rem;
+
+    &>svg {
+        width: 2.4rem;
+        height: 2.4rem;
+        color: #0284c7;
+        flex-shrink: 0;
+        margin-top: 0.2rem;
+    }
+
+    .infoTitle {
+        font-size: 1.5rem;
+        font-weight: 600;
+        color: #0c4a6e;
+        margin-bottom: 0.4rem;
+    }
+
+    .infoText {
+        font-size: 1.4rem;
+        color: #075985;
+        line-height: 1.6;
+        margin: 0;
+    }
+}
+
+.connectionStatus {
+    margin-bottom: 2rem;
+}
+
+.statusIndicator {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 1rem 1.6rem;
+    background-color: #f9fafb;
+    border: 0.1rem solid #e5e7eb;
+    border-radius: 0.8rem;
+    font-size: 1.4rem;
+    font-weight: 500;
+    color: #374151;
+}
+
+.statusDot {
+    width: 0.8rem;
+    height: 0.8rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.modalFooter {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 1.2rem;
+    padding: 2rem 2.4rem 2.4rem;
+    border-top: 0.1rem solid rgb(226 232 240);
+    margin-top: 0;
+}
+
+.cancelButton {
+    padding: 1rem 2rem;
+    border-radius: 0.6rem;
+    background-color: transparent;
+    border: 0.1rem solid #e5e7eb;
+    cursor: pointer;
+    font-size: 1.4rem;
+    font-weight: 500;
+    color: #374151;
+    transition: all 0.2s;
+
+    &:hover {
+        background-color: #f9fafb;
+        border-color: #d1d5db;
+    }
+}
+
+.submitButton {
+    padding: 1rem 2rem;
+    border-radius: 0.6rem;
+    background-color: #3b82f6;
+    border: none;
+    cursor: pointer;
+    font-size: 1.4rem;
+    font-weight: 500;
+    color: #fff;
+    transition: background-color 0.2s;
+
+    &:hover:not(:disabled) {
+        background-color: #2563eb;
+    }
+
+    &:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+}
+
+.dangerButton {
+    padding: 0.8rem 1.6rem;
+    border-radius: 0.6rem;
+    background-color: #ef4444;
+    border: none;
+    cursor: pointer;
+    font-size: 1.4rem;
+    font-weight: 500;
+    color: #fff;
+    transition: background-color 0.2s;
+
+    &:hover {
+        background-color: #dc2626;
+    }
+}
+
+.spinner {
+    width: 2rem;
+    height: 2rem;
+    border: 0.25rem solid #e5e7eb;
+    border-top: 0.25rem solid #3b82f6;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}

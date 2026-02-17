@@ -1,0 +1,178 @@
+{
+  "tools": [
+    {
+      "name": "text_formatter",
+      "description": "Convert text to uppercase",
+      "enabled": true,
+      "agentTypes": ["langchain"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to convert"
+          }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "get_invoices",
+      "description": "Get invoices from DATABASE (not Xero). Use this only when the user explicitly asks for database invoices, or when filtering by supplierId, logId, or paymentStatus. IMPORTANT: When the user asks to find/search for an invoice by invoice number or reference (e.g., 'find invoice 14486/2025', 'search for invoice ABC-123'), use get_xero_invoice instead, which searches Xero with fuzzy matching. This tool searches the local database which may not have all invoices.",
+      "enabled": true,
+      "agentTypes": ["langchain"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "invoiceId": {
+            "type": "string",
+            "description": "Invoice ID"
+          },
+          "supplierId": {
+            "type": "string",
+            "description": "Supplier ID"
+          },
+          "logId": {
+            "type": "string",
+            "description": "Log ID"
+          },
+          "invoiceNumber": {
+            "type": "string",
+            "description": "Invoice number"
+          },
+          "paymentStatus": {
+            "type": "string",
+            "enum": ["paid", "unpaid"],
+            "description": "Payment status"
+          },
+          "page": {
+            "type": "number",
+            "description": "Page number"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Results per page (max 20)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_suppliers",
+      "description": "Get suppliers from database. Search by name. Returns supplier list with missed invoice counts. CRITICAL: Always clearly indicate that supplier data comes from Database. When listing suppliers, always include the missed invoice count for each supplier. Missed invoices are invoices found in Xero but not in supplier statements.",
+      "enabled": true,
+      "agentTypes": ["langchain"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "supplierId": {
+            "type": "string",
+            "description": "Supplier ID"
+          },
+          "search": {
+            "type": "string",
+            "description": "Search by name"
+          },
+          "page": {
+            "type": "number",
+            "description": "Page number"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Results per page (max 20)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_logs",
+      "description": "Get processing logs from database. Filter by supplier or status.",
+      "enabled": true,
+      "agentTypes": ["langchain", "langgraph"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "logId": {
+            "type": "string",
+            "description": "Log ID"
+          },
+          "supplierId": {
+            "type": "string",
+            "description": "Supplier ID"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["started", "completed", "failed"],
+            "description": "Status"
+          },
+          "page": {
+            "type": "number",
+            "description": "Page number"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Results per page (max 20)"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "detect_upload_intent",
+      "description": "Detect if the user wants to upload documents (statements, invoices, or other files). Use this when the user mentions uploading, adding, or submitting new statements, invoices, documents, or files.",
+      "enabled": true,
+      "agentTypes": ["langchain"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "documentType": {
+            "type": "string",
+            "description": "Type of document user wants to upload (e.g., 'statements', 'invoices', 'documents')"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_supplier_details",
+      "description": "Get detailed supplier information from database and Xero. Use this when user asks about supplier details, contact information, supplier data, or balance information. IMPORTANT: When the user mentions a supplier by name (e.g., 'get details for Acme Corp', 'show me information about XYZ Company', 'what are the details for ABC Ltd', 'what is the balance for ADIPVEN'), extract the supplier name from their message and pass it as supplierName parameter. The tool will search the database by name (case-insensitive, partial match), fetch from Xero, and return comprehensive supplier information including contact details, addresses, phone numbers, account balances, and missed invoice counts. CRITICAL: Always clearly indicate the data source (Database vs Xero) when presenting information. Supplier basic info (name, email, ID) comes from Database. Contact details, balances, and financial data come from Xero. The tool returns missed invoice count from Database. For suppliers, the balance represents the amount owed to the supplier (AccountsPayable). Always include balance information and missed invoice count in your response when available. If supplierId or supplierName is not provided and user is on a supplier page, the system will use context from current page.",
+      "enabled": true,
+      "agentTypes": ["langchain"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "supplierId": {
+            "type": "string",
+            "description": "Supplier ID from database"
+          },
+          "supplierName": {
+            "type": "string",
+            "description": "Supplier name to search for. Extract this from the user's message when they mention a supplier by name. Examples: 'Acme Corp', 'XYZ Company', 'ABC Ltd'. The search is case-insensitive and supports partial matches."
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "get_xero_invoice",
+      "description": "PREFERRED TOOL for finding invoices by invoice number or reference. Searches Xero (not database) using the same fuzzy matching logic as parse file. This tool can find invoices even with partial matches, variations, or formatting differences (e.g., '14486/2025', '14486-2025', 'INV-14486'). ALWAYS use this tool when the user asks to find, search, or get an invoice by number or reference. Examples: 'find invoice 14486/2025', 'get invoice 12345', 'search for invoice ABC-123', 'what is invoice INV-2024-001'. The tool first tries exact matching, then uses fuzzy matching (same logic as parse file) if no exact match is found.",
+      "enabled": true,
+      "agentTypes": ["langchain"],
+      "schema": {
+        "type": "object",
+        "properties": {
+          "invoiceNumber": {
+            "type": "string",
+            "description": "Invoice number to search for in Xero"
+          },
+          "reference": {
+            "type": "string",
+            "description": "Reference number to search for in Xero"
+          }
+        },
+        "required": []
+      }
+    }
+  ]
+}
