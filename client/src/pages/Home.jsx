@@ -106,7 +106,7 @@ export default function Home() {
     }
 
     function handleSupplierClick(supplierId, supplierName) {
-        window.location.href = `/suppliers-logs/${supplierId}?name=${encodeURIComponent(supplierName)}`;
+        window.location.href = `/v1/suppliers-logs/${supplierId}?name=${encodeURIComponent(supplierName)}`;
     }
 
     function handlePrevPage() {

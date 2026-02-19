@@ -3,8 +3,6 @@ import { Link } from "react-router-dom";
 import * as XLSX from "xlsx";
 import Top from "../componentes/Top";
 import pageStyle from "../scss/Pages.module.scss";
-import { formatCurrency } from "../utils/currencyUtils";
-
 const DASHBOARD_STATS_URL = "/api/v2/dashboard/stats";
 const UNMATCHED_EXPORT_URL = "/api/v2/dashboard/unmatched-invoices-export";
 
@@ -258,13 +256,13 @@ export default function Dashboard() {
                         }}
                     >
                         <div style={{ fontSize: "1.3rem", color: "#6b7280", marginBottom: "0.4rem" }}>
-                            Bank account balance
+                            Bank account balance (£)
                         </div>
                         <div style={{ fontSize: "2rem", fontWeight: 600, color: "#1f2937" }}>
                             {loading
                                 ? "…"
                                 : stats?.bankBalance != null
-                                ? formatCurrency(stats.bankBalance, null)
+                                ? new Intl.NumberFormat("en-GB", { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(stats.bankBalance)
                                 : "—"}
                         </div>
                         <div style={{ fontSize: "1rem", color: "#9ca3af", marginTop: "0.4rem" }}>
@@ -332,7 +330,7 @@ export default function Dashboard() {
                             Payment-run candidates
                         </div>
                         <Link
-                            to="/run-payments"
+                            to="/v1/run-payments"
                             style={{
                                 display: "inline-block",
                                 marginTop: "0.8rem",
@@ -433,11 +431,11 @@ export default function Dashboard() {
 
                 {!loading && !error && (
                     <p style={{ fontSize: "1.4rem", color: "#6b7280" }}>
-                        <Link to="/suppliers" style={{ color: "#2563eb", fontWeight: 500 }}>
+                        <Link to="/v1/suppliers" style={{ color: "#2563eb", fontWeight: 500 }}>
                             Reconciliation
                         </Link>
                         {" · "}
-                        <Link to="/run-payments" style={{ color: "#2563eb", fontWeight: 500 }}>
+                        <Link to="/v1/run-payments" style={{ color: "#2563eb", fontWeight: 500 }}>
                             Payment run
                         </Link>
                     </p>

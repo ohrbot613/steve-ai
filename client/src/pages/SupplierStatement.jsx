@@ -61,7 +61,7 @@ export default function Home() {
 
 
     function handleSupplierClick(supplierId, supplierName) {
-        window.location.href = `/suppliers-statements/${supplierId}?name=${encodeURIComponent(supplierName)}`;
+        window.location.href = `/v1/suppliers-statements/${supplierId}?name=${encodeURIComponent(supplierName)}`;
     }
 
     function handlePrevPage() {
@@ -80,7 +80,7 @@ export default function Home() {
         <>
             <Top />
             <main className={pageStyle.main}>
-                <Link to="/" className={pageStyle.back}>
+                <Link to="/v1" className={pageStyle.back}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-left w-4 h-4" data-filename="pages/SupplierStatements" data-linenumber="29" data-visual-selector-id="pages/SupplierStatements29" data-source-location="pages/SupplierStatements:29:10" data-dynamic-content="false"><path d="m15 18-6-6 6-6"></path></svg>
                     Back to Suppliers
                 </Link>

@@ -402,14 +402,14 @@ export default function SupplierLogs() {
 
     function handleInvoiceRowClick(invoice) {
         if (invoice.statementId?._id) {
-            navigate(`/single-statement/${invoice.statementId._id}`, {
+            navigate(`/v1/single-statement/${invoice.statementId._id}`, {
                 state: { from: 'supplier-logs' }
             });
         }
     }
 
     function handleRowClick(logId) {
-        navigate(`/single-statement/${logId}`, { 
+        navigate(`/v1/single-statement/${logId}`, { 
             state: { from: 'supplier-logs' } 
         });
     }
@@ -985,7 +985,7 @@ export default function SupplierLogs() {
         <>
             <Top />
             <main className={pageStyle.main}>
-                <Link to="/" className={pageStyle.back}>
+                <Link to="/v1" className={pageStyle.back}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="m15 18-6-6 6-6"></path>
                     </svg>

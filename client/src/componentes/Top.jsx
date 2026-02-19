@@ -5,7 +5,6 @@ import modalStyle from "../scss/Modal.module.scss"
 import UserProfile from "./UserProfile"
 import ReportErrorModal from "./ReportErrorModal"
 import { formatCurrency } from '../utils/currencyUtils'
-import { useAppMode } from '../context/AppModeContext'
 
 const DASHBOARD_STATS_URL = "/api/v2/dashboard/stats";
 const RELOAD_SUPPLIERS_URL = "/api/v2/scripts/get-all-vendors";
@@ -16,7 +15,6 @@ const RELOADING_POLL_MS = 6000;
 export default function Top() {
     const navigate = useNavigate();
     const location = useLocation();
-    const { appMode, setAppMode } = useAppMode();
     const [showReportError, setShowReportError] = useState(false);
     const [bankBalance, setBankBalance] = useState(null);
     const [balanceLoading, setBalanceLoading] = useState(true);
@@ -62,16 +60,15 @@ export default function Top() {
         return () => clearInterval(id);
     }, []);
 
-    // Determine main section
-    const isDashboardActive = location.pathname === '/' || location.pathname === '/dashboard';
-    const isRunPaymentsActive = location.pathname === '/run-payments';
-    const isActivityActive = location.pathname === '/activity';
+    // V1 app lives under /v1; all links and active states use /v1 prefix
+    const isDashboardActive = location.pathname === '/v1' || location.pathname === '/v1/dashboard';
+    const isRunPaymentsActive = location.pathname === '/v1/run-payments';
+    const isActivityActive = location.pathname === '/v1/activity';
     const isReconciliationActive = !isRunPaymentsActive && !isDashboardActive && !isActivityActive;
 
-    // Determine which sub-link should be active (Reconciliation sub-nav)
-    const isSuppliersActive = location.pathname === '/' || location.pathname === '/suppliers' || location.pathname.startsWith('/suppliers-');
-    const isStatementsActive = location.pathname === '/statements';
-    const isInvoicesActive = location.pathname === '/invoices';
+    const isSuppliersActive = location.pathname === '/v1' || location.pathname === '/v1/suppliers' || location.pathname.startsWith('/v1/suppliers-');
+    const isStatementsActive = location.pathname === '/v1/statements';
+    const isInvoicesActive = location.pathname === '/v1/invoices';
 
     async function handleReloadConfirm() {
         if (!reloadConfirm) return;
@@ -147,41 +144,28 @@ export default function Top() {
                 <div className={styles.topLeft}>
                     <p>Steve Solutions</p>
                     <div className={styles.topLeftLinks}>
-                        <Link className={`${styles.topLeftLink} ${isDashboardActive ? styles.topLeftLinkActive : ''}`} to="/">
+                        <Link className={`${styles.topLeftLink} ${isDashboardActive ? styles.topLeftLinkActive : ''}`} to="/v1">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
                             <p>Dashboard</p>
                         </Link>
-                        <Link className={`${styles.topLeftLink} ${isRunPaymentsActive ? styles.topLeftLinkActive : ''}`} to="/run-payments">
+                        <Link className={`${styles.topLeftLink} ${isRunPaymentsActive ? styles.topLeftLinkActive : ''}`} to="/v1/run-payments">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
                             <p>Payments Run</p>
                         </Link>
-                        <Link className={`${styles.topLeftLink} ${isReconciliationActive ? styles.topLeftLinkActive : ''}`} to="/suppliers">
+                        <Link className={`${styles.topLeftLink} ${isReconciliationActive ? styles.topLeftLinkActive : ''}`} to="/v1/suppliers">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M10 9H8"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg>
                             <p>Reconciliation</p>
                         </Link>
-                        <Link className={`${styles.topLeftLink} ${isActivityActive ? styles.topLeftLinkActive : ''}`} to="/activity">
+                        <Link className={`${styles.topLeftLink} ${isActivityActive ? styles.topLeftLinkActive : ''}`} to="/v1/activity">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"></path></svg>
                             <p>Activity</p>
                         </Link>
                     </div>
                 </div>
                 <div className={styles.topRight}>
-                    <div className={styles.appModeSwitch} role="switch" aria-checked={appMode === 'simple'}>
-                        <button
-                            type="button"
-                            className={`${styles.appModeBtn} ${appMode === 'full' ? styles.appModeBtnActive : ''}`}
-                            onClick={() => setAppMode('full')}
-                        >
-                            Full app
-                        </button>
-                        <button
-                            type="button"
-                            className={`${styles.appModeBtn} ${appMode === 'simple' ? styles.appModeBtnActive : ''}`}
-                            onClick={() => setAppMode('simple')}
-                        >
-                            Simple
-                        </button>
-                    </div>
+                    <Link to="/" className={styles.appModeSwitch} title="Back to main app">
+                        <span className={styles.appModeBtn}>Main app</span>
+                    </Link>
                     <div className={styles.userBalance}>
                         <span className={styles.userBalanceLabel}>
                             Bank balance
@@ -282,15 +266,15 @@ export default function Top() {
             {isReconciliationActive && (
                 <div className={styles.subNav}>
                     <div className={styles.subNavLinks}>
-                        <Link className={`${styles.subNavLink} ${isSuppliersActive ? styles.subNavLinkActive : ''}`} to="/suppliers">
+                        <Link className={`${styles.subNavLink} ${isSuppliersActive ? styles.subNavLinkActive : ''}`} to="/v1/suppliers">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path><path d="M10 9H8"></path><path d="M16 13H8"></path><path d="M16 17H8"></path></svg>
                             <p>Suppliers</p>
                         </Link>
-                        <Link className={`${styles.subNavLink} ${isStatementsActive ? styles.subNavLinkActive : ''}`} to="/statements">
+                        <Link className={`${styles.subNavLink} ${isStatementsActive ? styles.subNavLinkActive : ''}`} to="/v1/statements">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h.01"></path><path d="M3 18h.01"></path><path d="M3 6h.01"></path><path d="M8 12h13"></path><path d="M8 18h13"></path><path d="M8 6h13"></path></svg>
                             <p>All Statements</p>
                         </Link>
-                        <Link className={`${styles.subNavLink} ${isInvoicesActive ? styles.subNavLinkActive : ''}`} to="/invoices">
+                        <Link className={`${styles.subNavLink} ${isInvoicesActive ? styles.subNavLinkActive : ''}`} to="/v1/invoices">
                             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1-2-1Z"></path><path d="M14 8H8"></path><path d="M16 12H8"></path><path d="M13 16H8"></path></svg>
                             <p>All Invoices</p>
                         </Link>

@@ -266,11 +266,11 @@ export default function SupplierLogsV2() {
     }
 
     function handleRowClick(logId) {
-        navigate(`/single-statement/${logId}`, { state: { from: "supplier-logs" } });
+        navigate(`/v1/single-statement/${logId}`, { state: { from: "supplier-logs" } });
     }
 
     function handleInvoiceRowClick(inv) {
-        if (inv.statementId?._id) navigate(`/single-statement/${inv.statementId._id}`, { state: { from: "supplier-logs" } });
+        if (inv.statementId?._id) navigate(`/v1/single-statement/${inv.statementId._id}`, { state: { from: "supplier-logs" } });
     }
 
     function handleDraftEmail() {
@@ -408,7 +408,7 @@ export default function SupplierLogsV2() {
         <>
             <Top />
             <main className={pageStyle.main}>
-                <Link to="/" className={pageStyle.back}>
+                <Link to="/v1" className={pageStyle.back}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="m15 18-6-6 6-6"></path>
                     </svg>

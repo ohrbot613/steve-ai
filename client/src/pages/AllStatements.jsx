@@ -133,7 +133,7 @@ export default function AllStatements() {
 
     function handleRowClick(statement) {
         if (statement.fileId) {
-            navigate(`/single-statement/${statement.fileId}`, {
+            navigate(`/v1/single-statement/${statement.fileId}`, {
                 state: { from: 'all-statements' }
             });
         }

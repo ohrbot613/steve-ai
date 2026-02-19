@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, Fragment } from "react";
 import styles from "../scss/SimpleApp.module.scss";
+import { exportToExcel } from "../utils/exportUtils";
 
 function formatAmount(amount) {
   if (amount == null || typeof amount !== "number" || Number.isNaN(amount)) return "—";
-  const formatted = new Intl.NumberFormat("en-GB", {
+  return new Intl.NumberFormat("en-GB", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(amount);
-  return `£${formatted}`;
 }
 
 function formatTableAmount(amount) {
@@ -20,6 +20,7 @@ function formatTableAmount(amount) {
 
 const DASHBOARD_DATA_URL = "/api/v2/dashboard/dashboard-data";
 const DASHBOARD_TAB2_URL = "/api/v2/dashboard/dashboard-tab-2";
+const DASHBOARD_TAB3_URL = "/api/v2/dashboard/dashboard-tab-3";
 const TAB2_PAGE_SIZE = 50;
 
 const ALLOWED_TYPES = [
@@ -29,7 +30,7 @@ const ALLOWED_TYPES = [
 ];
 const ALLOWED_EXT = [".pdf", ".xlsx", ".xls"];
 
-function getTableDataForTab(tab, dashboardData, tab2Data) {
+function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
   if (tab === "latest") {
     const summary = dashboardData?.supplierSummary;
     if (Array.isArray(summary) && summary.length > 0) {
@@ -56,9 +57,8 @@ function getTableDataForTab(tab, dashboardData, tab2Data) {
         const theySay = fileInvs.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
         const xeroSays = xeroInvs.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
         const amountMismatch = (s.pairs || []).filter((p) => p.label === "amount mismatch").length;
-        const pairedFileIds = new Set((s.pairs || []).flatMap((p) => [p.fileInvoice?._id, p.xeroInvoice?._id]).filter(Boolean));
-        const unpairedCount = fileInvs.filter((f) => !pairedFileIds.has(f._id)).length;
-        const issues = amountMismatch + unpairedCount;
+        const unpairedInvoices = s.unpairedInvoices || [];
+        const issues = amountMismatch + unpairedInvoices.length;
         return {
           supplier: s.supplier,
           contactId: s.contactId,
@@ -75,6 +75,19 @@ function getTableDataForTab(tab, dashboardData, tab2Data) {
     return [];
   }
   if (tab === "reconciled") {
+    const bySupplier = tab3Data?.bySupplier;
+    if (Array.isArray(bySupplier) && bySupplier.length > 0) {
+      return bySupplier.map((s) => ({
+        supplier: s.supplier,
+        contactId: s.contactId,
+        theySay: s.theySay ?? 0,
+        xeroSays: s.xeroSays ?? 0,
+        unpaid: s.unpaid ?? 0,
+        issues: 0,
+        status: "Reconciled",
+        pairs: s.pairs || [],
+      }));
+    }
     return [];
   }
   return [];
@@ -158,6 +171,33 @@ function useDashboardTab2() {
   return { data: data ?? null, loading, refetch };
 }
 
+/** Fetch dashboard tab 3 (reconciled: same-amount pairs only, by supplier). */
+function useDashboardTab3() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const refetch = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(DASHBOARD_TAB3_URL, { credentials: "include" });
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.success) setData(json);
+      else setData(null);
+    } catch {
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  return { data: data ?? null, loading, refetch };
+}
+
 function formatLogDateTime(createdAt) {
   if (!createdAt) return null;
   const d = new Date(createdAt);
@@ -169,11 +209,15 @@ export default function SimpleApp() {
   const { data: dashboardData, loading: lastUploadLoading, refetch: refetchDashboardData } =
     useDashboardData();
   const { data: tab2Data } = useDashboardTab2();
+  const { data: tab3Data } = useDashboardTab3();
   const fileInputRef = useRef(null);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [activeTab, setActiveTab] = useState("reconciled");
+  const [exportTab2Loading, setExportTab2Loading] = useState(false);
+  const [exportingSupplierKey, setExportingSupplierKey] = useState(null);
+  const [paymentSuggestionNotifyRow, setPaymentSuggestionNotifyRow] = useState(null);
   const [sortByTab, setSortByTab] = useState({
     latest: { column: null, dir: "asc" },
     attention: { column: null, dir: "asc" },
@@ -197,7 +241,7 @@ export default function SimpleApp() {
   };
 
   const tabSort = sortByTab[activeTab];
-  const tableDataForTab = getTableDataForTab(activeTab, dashboardData, tab2Data);
+  const tableDataForTab = getTableDataForTab(activeTab, dashboardData, tab2Data, tab3Data);
   const sortedTableData = sortTableRows(
     tableDataForTab,
     tabSort.column,
@@ -274,9 +318,11 @@ export default function SimpleApp() {
     ? xeroSaysWeOwe - suppliersSayWeOwe
     : null;
 
-  const suppliersReconciled = Array.isArray(dashboardData?.contactIdsInPaired)
-    ? dashboardData.contactIdsInPaired.length
-    : 0;
+  const suppliersReconciled = Array.isArray(tab3Data?.bySupplier)
+    ? tab3Data.bySupplier.length
+    : Array.isArray(dashboardData?.contactIdsInPaired)
+      ? dashboardData.contactIdsInPaired.length
+      : 0;
   const suppliersWithIssues = Array.isArray(dashboardData?.contactIdsInNonPaired)
     ? dashboardData.contactIdsInNonPaired.length
     : 0;
@@ -286,6 +332,123 @@ export default function SimpleApp() {
     (sum, row) => sum + (row.issues ?? 0),
     0
   );
+
+  const exportTab2IssuesToExcel = useCallback(async () => {
+    const bySupplier = tab2Data?.bySupplier;
+    if (!Array.isArray(bySupplier) || bySupplier.length === 0) {
+      alert("No data to export");
+      return;
+    }
+    setExportTab2Loading(true);
+    try {
+      const rows = [];
+      for (const s of bySupplier) {
+        const supplier = s.supplier || s.contactId || "";
+        for (const p of s.pairs || []) {
+          if (p.label !== "amount mismatch") continue;
+          const fileInv = p.fileInvoice || {};
+          const xeroInv = p.xeroInvoice || {};
+          rows.push({
+            supplier,
+            issue: "AMOUNT MISMATCH",
+            invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
+            fileAmount: Number(fileInv.amount) ?? "",
+            xeroAmount: Number(xeroInv.amount) ?? "",
+            currency: fileInv.currency ?? xeroInv.currency ?? "GBP",
+            dueDate: fileInv.dueDate || xeroInv.dueDate
+              ? new Date(fileInv.dueDate || xeroInv.dueDate).toLocaleDateString("en-GB")
+              : "",
+          });
+        }
+        for (const u of s.unpairedInvoices || []) {
+          rows.push({
+            supplier,
+            issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
+            invoiceNumber: u.invoiceNumber || "",
+            fileAmount: u.fromXero ? "" : (Number(u.amount) ?? ""),
+            xeroAmount: u.fromXero ? (Number(u.amount) ?? "") : "",
+            currency: u.currency ?? "GBP",
+            dueDate: u.dueDate ? new Date(u.dueDate).toLocaleDateString("en-GB") : "",
+          });
+        }
+      }
+      if (rows.length === 0) {
+        alert("No issues to export");
+        return;
+      }
+      const headers = [
+        { label: "Supplier", key: "supplier" },
+        { label: "Issue", key: "issue" },
+        { label: "Invoice #", key: "invoiceNumber" },
+        { label: "File Amount", key: "fileAmount" },
+        { label: "Xero Amount", key: "xeroAmount" },
+        { label: "Currency", key: "currency" },
+        { label: "Due Date", key: "dueDate" },
+      ];
+      await exportToExcel(rows, headers, `tab2-issues-${new Date().toISOString().slice(0, 10)}`);
+    } catch (err) {
+      console.error(err);
+      alert("Export failed");
+    } finally {
+      setExportTab2Loading(false);
+    }
+  }, [tab2Data]);
+
+  const exportSingleSupplierToExcel = useCallback(async (row) => {
+    const supplier = row.supplier || row.contactId || "";
+    const rows = [];
+    for (const p of row.pairs || []) {
+      if (p.label !== "amount mismatch") continue;
+      const fileInv = p.fileInvoice || {};
+      const xeroInv = p.xeroInvoice || {};
+      rows.push({
+        supplier,
+        issue: "AMOUNT MISMATCH",
+        invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
+        fileAmount: Number(fileInv.amount) ?? "",
+        xeroAmount: Number(xeroInv.amount) ?? "",
+        currency: fileInv.currency ?? xeroInv.currency ?? "GBP",
+        dueDate: fileInv.dueDate || xeroInv.dueDate
+          ? new Date(fileInv.dueDate || xeroInv.dueDate).toLocaleDateString("en-GB")
+          : "",
+      });
+    }
+    for (const u of row.unpairedInvoices || []) {
+      rows.push({
+        supplier,
+        issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
+        invoiceNumber: u.invoiceNumber || "",
+        fileAmount: u.fromXero ? "" : (Number(u.amount) ?? ""),
+        xeroAmount: u.fromXero ? (Number(u.amount) ?? "") : "",
+        currency: u.currency ?? "GBP",
+        dueDate: u.dueDate ? new Date(u.dueDate).toLocaleDateString("en-GB") : "",
+      });
+    }
+    if (rows.length === 0) {
+      alert("No issues to export for this supplier");
+      return;
+    }
+    const rowKey = row.contactId ?? row.supplier;
+    setExportingSupplierKey(rowKey);
+    try {
+      const headers = [
+        { label: "Supplier", key: "supplier" },
+        { label: "Issue", key: "issue" },
+        { label: "Invoice #", key: "invoiceNumber" },
+        { label: "File Amount", key: "fileAmount" },
+        { label: "Xero Amount", key: "xeroAmount" },
+        { label: "Currency", key: "currency" },
+        { label: "Due Date", key: "dueDate" },
+      ];
+      const slug = String(supplier).replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 40);
+      await exportToExcel(rows, headers, `tab2-issues-${slug}-${new Date().toISOString().slice(0, 10)}`);
+    } catch (err) {
+      console.error(err);
+      alert("Export failed");
+    } finally {
+      setExportingSupplierKey(null);
+    }
+  }, []);
 
   const xeroInvoiceNumbers = new Set(
     (dashboardData?.xeroInvoices || []).map((inv) => inv.invoiceNumber).filter(Boolean)
@@ -374,17 +537,17 @@ export default function SimpleApp() {
 
   const totals = [
     {
-      label: "Suppliers say we owe",
+      label: "Suppliers say we owe (£)",
       value: formatAmount(suppliersSayWeOwe),
       valueClass: styles.totalsValueDefault,
     },
     {
-      label: "Xero says we owe",
+      label: "Xero says we owe (£)",
       value: formatAmount(xeroSaysWeOwe),
       valueClass: styles.totalsValueDefault,
     },
     {
-      label: "Difference",
+      label: "Difference (£)",
       value: formatAmount(difference),
       valueClass:
         difference != null
@@ -409,14 +572,79 @@ export default function SimpleApp() {
         tabIndex={-1}
       />
       <div className={styles.container}>
+        {lastUploadLoading ? (
+          <>
+            <section className={styles.batchSummary} aria-busy aria-label="Loading">
+              <div className={styles.batchHeader}>
+                <div className={styles.skeletonLine} style={{ width: 220, height: 14 }} />
+                <div className={styles.skeletonLine} style={{ width: 140, height: 12 }} />
+              </div>
+              <div className={styles.cardsRow}>
+                <div className={styles.card}>
+                  <div className={`${styles.skeletonBlock} ${styles.skeletonNumber}`} />
+                  <div className={styles.skeletonLine} style={{ width: "80%", height: 16, marginTop: 10 }} />
+                  <div className={styles.skeletonLine} style={{ width: 100, height: 12, marginTop: 8 }} />
+                </div>
+                <div className={styles.card}>
+                  <div className={`${styles.skeletonBlock} ${styles.skeletonNumber}`} />
+                  <div className={styles.skeletonLine} style={{ width: "75%", height: 16, marginTop: 10 }} />
+                  <div className={styles.skeletonLine} style={{ width: 90, height: 12, marginTop: 8 }} />
+                </div>
+              </div>
+            </section>
+            <section className={styles.totalsBar}>
+              <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 160, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 72, height: 20, marginTop: 4, display: "inline-block" }} /></div>
+              <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 150, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 72, height: 20, marginTop: 4, display: "inline-block" }} /></div>
+              <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 100, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 56, height: 20, marginTop: 4, display: "inline-block" }} /></div>
+            </section>
+            <div className={styles.tabsContainer}>
+              <nav className={styles.tabs} aria-hidden>
+                <div className={`${styles.tab} ${styles.tabActive}`}><span className={styles.skeletonLine} style={{ width: 88, height: 14 }} /><span className={styles.skeletonBadge} /></div>
+                <div className={styles.tab}><span className={styles.skeletonLine} style={{ width: 110, height: 14 }} /><span className={styles.skeletonBadge} /></div>
+                <div className={styles.tab}><span className={styles.skeletonLine} style={{ width: 72, height: 14 }} /><span className={styles.skeletonBadge} /></div>
+              </nav>
+            </div>
+            <div className={styles.tabPanel}>
+              <div className={styles.tableSection}>
+                <div className={styles.tableWrap}>
+                  <table className={styles.supplierTable}>
+                    <thead>
+                      <tr>
+                        <th className={styles.tableTh}><span className={styles.skeletonLine} style={{ width: 80, height: 12 }} /></th>
+                        <th className={styles.tableTh}><span className={styles.skeletonLine} style={{ width: 120, height: 12 }} /></th>
+                        <th className={styles.tableTh}><span className={styles.skeletonLine} style={{ width: 120, height: 12 }} /></th>
+                        <th className={styles.tableTh}><span className={styles.skeletonLine} style={{ width: 90, height: 12 }} /></th>
+                        <th className={styles.tableTh}><span className={styles.skeletonLine} style={{ width: 50, height: 12 }} /></th>
+                        <th className={styles.tableTh}><span className={styles.skeletonLine} style={{ width: 50, height: 12 }} /></th>
+                        <th className={styles.tableTh}><span className={styles.skeletonLine} style={{ width: 70, height: 12 }} /></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                        <tr key={i} className={styles.skeletonRow}>
+                          <td><span className={styles.skeletonLine} style={{ width: "90%", height: 14 }} /></td>
+                          <td><span className={styles.skeletonLine} style={{ width: 64, height: 14 }} /></td>
+                          <td><span className={styles.skeletonLine} style={{ width: 64, height: 14 }} /></td>
+                          <td><span className={styles.skeletonLine} style={{ width: 56, height: 14 }} /></td>
+                          <td><span className={styles.skeletonLine} style={{ width: 28, height: 14 }} /></td>
+                          <td><span className={styles.skeletonLine} style={{ width: 28, height: 14 }} /></td>
+                          <td><span className={styles.skeletonLine} style={{ width: 100, height: 14 }} /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+        <>
         <section className={styles.batchSummary} aria-label="Latest upload summary">
           <div className={styles.batchHeader}>
             <div className={styles.latestLabel}>
               <span className={styles.latestDot} aria-hidden />
               Latest Upload —{" "}
-              {lastUploadLoading
-                ? "…"
-                : `${statementCount} statement${statementCount !== 1 ? "s" : ""} processed`}
+              {statementCount} statement{statementCount !== 1 ? "s" : ""} processed
             </div>
             <time
               className={styles.dateTime}
@@ -426,9 +654,7 @@ export default function SimpleApp() {
                   : undefined
               }
             >
-              {lastUploadLoading
-                ? "…"
-                : lastUploadDateTime ?? "No uploads yet"}
+              {lastUploadDateTime ?? "No uploads yet"}
             </time>
           </div>
           {uploadLoading && (
@@ -489,68 +715,81 @@ export default function SimpleApp() {
           ))}
         </section>
 
-        <nav
-          className={styles.tabs}
-          role="tablist"
-          aria-label="Batch views"
-          onKeyDown={(e) => {
-            const tabs = ["latest", "attention", "reconciled"];
-            const i = tabs.indexOf(activeTab);
-            if (e.key === "ArrowRight" && i < tabs.length - 1) {
-              e.preventDefault();
-              setActiveTab(tabs[i + 1]);
-            } else if (e.key === "ArrowLeft" && i > 0) {
-              e.preventDefault();
-              setActiveTab(tabs[i - 1]);
-            } else if (e.key === "Home") {
-              e.preventDefault();
-              setActiveTab("latest");
-            } else if (e.key === "End") {
-              e.preventDefault();
-              setActiveTab("reconciled");
-            }
-          }}
-        >
-          <button
-            type="button"
-            role="tab"
-            id="tab-latest"
-            aria-selected={activeTab === "latest"}
-            aria-controls="panel-latest"
-            tabIndex={activeTab === "latest" ? 0 : -1}
-            className={`${styles.tab} ${activeTab === "latest" ? styles.tabActive : ""}`}
-            onClick={() => setActiveTab("latest")}
+        <div className={styles.tabsContainer}>
+          <nav
+            className={styles.tabs}
+            role="tablist"
+            aria-label="Batch views"
+            onKeyDown={(e) => {
+              const tabs = ["latest", "attention", "reconciled"];
+              const i = tabs.indexOf(activeTab);
+              if (e.key === "ArrowRight" && i < tabs.length - 1) {
+                e.preventDefault();
+                setActiveTab(tabs[i + 1]);
+              } else if (e.key === "ArrowLeft" && i > 0) {
+                e.preventDefault();
+                setActiveTab(tabs[i - 1]);
+              } else if (e.key === "Home") {
+                e.preventDefault();
+                setActiveTab("latest");
+              } else if (e.key === "End") {
+                e.preventDefault();
+                setActiveTab("reconciled");
+              }
+            }}
           >
-            Latest Batch
-            <span className={styles.tabBadge}>{statementCount}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="tab-attention"
-            aria-selected={activeTab === "attention"}
-            aria-controls="panel-attention"
-            tabIndex={activeTab === "attention" ? 0 : -1}
-            className={`${styles.tab} ${activeTab === "attention" ? styles.tabActive : ""}`}
-            onClick={() => setActiveTab("attention")}
-          >
-            Needs Attention
-            <span className={styles.tabBadge}>{needsAttentionCount}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id="tab-reconciled"
-            aria-selected={activeTab === "reconciled"}
-            aria-controls="panel-reconciled"
-            tabIndex={activeTab === "reconciled" ? 0 : -1}
-            className={`${styles.tab} ${activeTab === "reconciled" ? styles.tabActive : ""}`}
-            onClick={() => setActiveTab("reconciled")}
-          >
-            Reconciled
-            <span className={styles.tabBadge}>{suppliersReconciled}</span>
-          </button>
-        </nav>
+            <button
+              type="button"
+              role="tab"
+              id="tab-latest"
+              aria-selected={activeTab === "latest"}
+              aria-controls="panel-latest"
+              tabIndex={activeTab === "latest" ? 0 : -1}
+              className={`${styles.tab} ${activeTab === "latest" ? styles.tabActive : ""}`}
+              onClick={() => setActiveTab("latest")}
+            >
+              Latest Batch
+              <span className={styles.tabBadge}>{statementCount}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-attention"
+              aria-selected={activeTab === "attention"}
+              aria-controls="panel-attention"
+              tabIndex={activeTab === "attention" ? 0 : -1}
+              className={`${styles.tab} ${activeTab === "attention" ? styles.tabActive : ""}`}
+              onClick={() => setActiveTab("attention")}
+            >
+              Need you attention
+              <span className={styles.tabBadge}>{needsAttentionCount}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-reconciled"
+              aria-selected={activeTab === "reconciled"}
+              aria-controls="panel-reconciled"
+              tabIndex={activeTab === "reconciled" ? 0 : -1}
+              className={`${styles.tab} ${activeTab === "reconciled" ? styles.tabActive : ""}`}
+              onClick={() => setActiveTab("reconciled")}
+            >
+              Reconciled
+              <span className={styles.tabBadge}>{suppliersReconciled}</span>
+            </button>
+          </nav>
+          {activeTab === "attention" && (
+            <button
+              type="button"
+              className={styles.tab2ExportBtn}
+              onClick={exportTab2IssuesToExcel}
+              disabled={exportTab2Loading || needsAttentionCount === 0}
+              aria-label="Export all issues to Excel"
+            >
+              {exportTab2Loading ? "Exporting…" : "Export to Excel"}
+            </button>
+          )}
+        </div>
 
         <div
           id={`panel-${activeTab}`}
@@ -566,9 +805,9 @@ export default function SimpleApp() {
                   <tr>
                     {[
                       ["supplier", "SUPPLIER"],
-                      ["theySay", "THEY SAY WE OWE"],
-                      ["xeroSays", "XERO SAYS WE OWE"],
-                      ["difference", "DIFFERENCE"],
+                      ["theySay", "THEY SAY WE OWE (£)"],
+                      ["xeroSays", "XERO SAYS WE OWE (£)"],
+                      ...(activeTab === "reconciled" ? [] : [["difference", "DIFFERENCE (£)"]]),
                       ["unpaid", "UNPAID"],
                       ["issues", "ISSUES"],
                       ["status", "STATUS"],
@@ -596,15 +835,20 @@ export default function SimpleApp() {
                         )}
                       </th>
                     ))}
+                    {activeTab === "attention" && (
+                      <th key="export" className={styles.tableTh} style={{ width: 52 }}>
+                        Export
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {paginatedTableData.map((row, i) => {
                     const diff = row.difference ?? row.xeroSays - row.theySay;
-                    const diffFormatted = diff >= 0 ? `£${formatTableAmount(diff)}` : `-£${formatTableAmount(-diff)}`;
+                    const diffFormatted = diff >= 0 ? formatTableAmount(diff) : `-${formatTableAmount(-diff)}`;
                     const statusClass =
-                      row.status === "Contacted"
-                        ? styles.statusContacted
+                      row.status === "Reconciled" || row.status === "Contacted"
+                        ? styles.statusReconciled
                         : row.status === "No action needed"
                           ? styles.statusNoActionNeeded
                           : row.status === "Action Needed"
@@ -619,6 +863,36 @@ export default function SimpleApp() {
                     const viewAllInvoices = activeTab === "latest" && Array.isArray(row.invoicesViewAll) ? row.invoicesViewAll : [];
                     const tab2Pairs = activeTab === "attention" ? (row.pairs || []) : [];
                     const tab2Unpaired = activeTab === "attention" ? (row.unpairedInvoices || []) : [];
+                    const tab3Pairs = activeTab === "reconciled" ? (row.pairs || []) : [];
+                    const todayStart = new Date();
+                    todayStart.setHours(0, 0, 0, 0);
+                    const tab3OverdueCount =
+                      activeTab === "reconciled"
+                        ? tab3Pairs.filter((p) => {
+                            const d = p.fileInvoice?.dueDate || p.xeroInvoice?.dueDate;
+                            if (!d) return false;
+                            const due = new Date(d);
+                            due.setHours(0, 0, 0, 0);
+                            return due.getTime() < todayStart.getTime();
+                          }).length
+                        : 0;
+                    const reconciledDetailInvoices =
+                      activeTab === "reconciled"
+                        ? tab3Pairs.map((p) => {
+                            const fa = Number(p.fileInvoice?.amount) ?? 0;
+                            const xa = Number(p.xeroInvoice?.amount) ?? 0;
+                            const date = p.fileInvoice?.dueDate || p.xeroInvoice?.dueDate;
+                            const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
+                            return {
+                              invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
+                              date: dateStr,
+                              issue: "Matched",
+                              supplierAmt: fa,
+                              xeroAmt: xa,
+                              difference: 0,
+                            };
+                          })
+                        : [];
                     const attentionDetailInvoices =
                       activeTab === "attention"
                         ? [
@@ -651,11 +925,13 @@ export default function SimpleApp() {
                           ]
                         : [];
                     const detailRows =
-                      activeTab === "attention"
-                        ? attentionDetailInvoices
-                        : viewAllShownForRow.has(rowKey)
-                          ? viewAllInvoices
-                          : detailInvoices;
+                      activeTab === "reconciled"
+                        ? reconciledDetailInvoices
+                        : activeTab === "attention"
+                          ? attentionDetailInvoices
+                          : viewAllShownForRow.has(rowKey)
+                            ? viewAllInvoices
+                            : detailInvoices;
                     const totalUnpaidCount =
                       activeTab === "attention"
                         ? (tab2Pairs.length * 2) + tab2Unpaired.length
@@ -676,13 +952,15 @@ export default function SimpleApp() {
                             <span className={`${styles.rowExpandIcon} ${isExpanded ? styles.rowExpandIconOpen : ""}`} aria-hidden>▶</span>
                             {row.supplier}
                           </td>
-                          <td className={styles.tableTd}>£{formatTableAmount(row.theySay)}</td>
-                          <td className={styles.tableTd}>£{formatTableAmount(row.xeroSays)}</td>
-                          <td className={styles.tableTd}>
-                            <span className={diff < 0 ? styles.diffNegative : styles.diffPositive}>
-                              {diffFormatted}
-                            </span>
-                          </td>
+                          <td className={styles.tableTd}>{formatTableAmount(row.theySay)}</td>
+                          <td className={styles.tableTd}>{formatTableAmount(row.xeroSays)}</td>
+                          {activeTab !== "reconciled" && (
+                            <td className={styles.tableTd}>
+                              <span className={diff < 0 ? styles.diffNegative : styles.diffPositive}>
+                                {diffFormatted}
+                              </span>
+                            </td>
+                          )}
                           <td className={styles.tableTd}>{row.unpaid}</td>
                           <td className={styles.tableTd}>
                             <span className={styles.issuesBadge}>{row.issues}</span>
@@ -693,10 +971,85 @@ export default function SimpleApp() {
                               {row.status}
                             </span>
                           </td>
+                          {activeTab === "attention" && (
+                            <td className={styles.tableTd} onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                className={styles.exportRowBtn}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  exportSingleSupplierToExcel(row);
+                                }}
+                                disabled={exportingSupplierKey === rowKey || (row.issues ?? 0) === 0}
+                                aria-label={`Export ${row.supplier} to Excel`}
+                                title="Export to Excel"
+                              >
+                                {exportingSupplierKey === rowKey ? (
+                                  <span className={styles.exportRowBtnSpinner} aria-hidden />
+                                ) : (
+                                  <svg className={styles.exportRowIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                    <polyline points="7 10 12 15 17 10" />
+                                    <line x1="12" y1="15" x2="12" y2="3" />
+                                  </svg>
+                                )}
+                              </button>
+                            </td>
+                          )}
                         </tr>
                         {isExpanded && (
                           <tr className={styles.tableRowDetail}>
-                            <td colSpan={7} className={styles.tableTdDetail}>
+                            <td colSpan={activeTab === "reconciled" ? 6 : activeTab === "attention" ? 8 : 7} className={styles.tableTdDetail}>
+                              {activeTab === "reconciled" ? (
+                                <div className={styles.reconciledCard}>
+                                  <div className={styles.reconciledCardLeft}>
+                                    <h3 className={styles.reconciledCardSupplier}>{row.supplier}</h3>
+                                    <p className={styles.reconciledCardSummary}>
+                                      Total owed: <strong>£{formatTableAmount(row.theySay)}</strong>
+                                      {" · "}
+                                      <strong>{row.unpaid} invoices</strong>
+                                      {tab3OverdueCount > 0 && (
+                                        <>
+                                          {" · "}
+                                          <span className={styles.reconciledCardOverdue}>
+                                            <strong>{tab3OverdueCount} overdue</strong>
+                                          </span>
+                                        </>
+                                      )}
+                                    </p>
+                                  </div>
+                                  <div className={styles.reconciledCardActions}>
+                                    <button
+                                      type="button"
+                                      className={styles.reconciledCardGenerateBtn}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPaymentSuggestionNotifyRow(rowKey);
+                                        setTimeout(() => setPaymentSuggestionNotifyRow(null), 4000);
+                                      }}
+                                      aria-label="Generate payment suggestion"
+                                    >
+                                      Generate Payment Suggestion
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.reconciledCardCloseBtn}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        closeExpanded(rowKey);
+                                      }}
+                                      aria-label="Close"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                  {paymentSuggestionNotifyRow === rowKey && (
+                                    <p className={styles.reconciledCardNotify} role="status">
+                                      Generate Payment Suggestion is in development and will be available soon.
+                                    </p>
+                                  )}
+                                </div>
+                              ) : (
                               <div className={styles.detailPanel}>
                                 <div className={styles.detailHeader}>
                                   <h3 className={styles.detailTitle}>
@@ -706,7 +1059,7 @@ export default function SimpleApp() {
                                         : `${totalUnpaidCount} Unpaid invoices from supplier`
                                       : latestNoIssues
                                         ? "No errors here"
-                                        : "Need your attention"}
+                                        : "Need you attention"}
                                   </h3>
                                   {activeTab === "latest" && (
                                     <button
@@ -753,9 +1106,9 @@ export default function SimpleApp() {
                                         <th className={styles.detailTh}>INVOICE #</th>
                                         <th className={styles.detailTh}>DATE</th>
                                         <th className={styles.detailTh}>ISSUE</th>
-                                        <th className={styles.detailTh}>SUPPLIER AMT</th>
-                                        <th className={styles.detailTh}>XERO AMT</th>
-                                        <th className={styles.detailTh}>DIFFERENCE</th>
+                                        <th className={styles.detailTh}>SUPPLIER AMT (£)</th>
+                                        <th className={styles.detailTh}>XERO AMT (£)</th>
+                                        <th className={styles.detailTh}>DIFFERENCE (£)</th>
                                       </tr>
                                     </thead>
                                     <tbody>
@@ -773,14 +1126,14 @@ export default function SimpleApp() {
                                             )}
                                           </td>
                                           <td className={styles.detailTd}>
-                                            {inv.supplierAmt == null ? "–" : `£${formatTableAmount(inv.supplierAmt)}`}
+                                            {inv.supplierAmt == null ? "–" : formatTableAmount(inv.supplierAmt)}
                                           </td>
-                                          <td className={styles.detailTd}>{inv.xeroAmt == null ? "–" : `£${formatTableAmount(inv.xeroAmt)}`}</td>
+                                          <td className={styles.detailTd}>{inv.xeroAmt == null ? "–" : formatTableAmount(inv.xeroAmt)}</td>
                                           <td className={styles.detailTd}>
                                             {inv.issue === "Matched" ? (
-                                              <span className={styles.diffNeutral}>£0.00</span>
+                                              <span className={styles.diffNeutral}>0.00</span>
                                             ) : (
-                                              <span className={styles.diffNegative}>£{formatTableAmount(inv.difference)}</span>
+                                              <span className={styles.diffNegative}>{formatTableAmount(inv.difference)}</span>
                                             )}
                                           </td>
                                         </tr>
@@ -790,6 +1143,7 @@ export default function SimpleApp() {
                                 </div>
                                 )}
                               </div>
+                              )}
                             </td>
                           </tr>
                         )}
@@ -829,6 +1183,8 @@ export default function SimpleApp() {
             )}
           </section>
         </div>
+        </>
+        )}
       </div>
 
     </div>

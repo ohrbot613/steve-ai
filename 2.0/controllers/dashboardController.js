@@ -481,15 +481,18 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
         if (inv.fromXero === false && xeroInvoiceNumbers.has(inv.invoiceNumber || "")) return false;
         return true;
     });
-    const contactIds = [...new Set(invoices.map((inv) => inv.contactId).filter(Boolean))];
-    const vendors = contactIds.length > 0
-        ? await Vendor.find({ xeroId: { $in: contactIds }, isDeleted: { $ne: true } })
+    const contactIdsFromInvoices = [...new Set(invoices.map((inv) => inv.contactId).filter(Boolean))];
+    const vendors = contactIdsFromInvoices.length > 0
+        ? await Vendor.find({ xeroId: { $in: contactIdsFromInvoices }, isDeleted: { $ne: true } })
             .select("xeroId name")
             .lean()
         : [];
     const vendorNameByContactId = new Map(vendors.map((v) => [v.xeroId, v.name || v.xeroId]));
+    const validContactIds = new Set(vendorNameByContactId.keys());
+    const invoicesWithValidSupplier = invoices.filter((inv) => validContactIds.has(inv.contactId || ""));
+    const contactIds = [...new Set(invoicesWithValidSupplier.map((inv) => inv.contactId).filter(Boolean))];
     const bySupplier = contactIds.map((contactId) => {
-            const supplierInvoices = invoices.filter((inv) => inv.contactId === contactId);
+            const supplierInvoices = invoicesWithValidSupplier.filter((inv) => inv.contactId === contactId);
             const byInvoiceNumber = new Map();
             for (const inv of supplierInvoices) {
                 const num = inv.invoiceNumber || "";
@@ -513,6 +516,7 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
                         unpairedInvoices.push({
                             invoiceNumber: inv.invoiceNumber,
                             amount: inv.amount,
+                            currency: inv.currency ?? "GBP",
                             dueDate: inv.dueDate,
                             fromXero: inv.fromXero,
                             _id: inv._id,
@@ -529,5 +533,70 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
                 unpairedInvoices,
             };
         });
+    res.status(200).json({ success: true, bySupplier });
+});
+
+/**
+ * GET /api/v2/dashboard/dashboard-tab-3
+ * Separate route: gets all unpaid invoices, finds every pair that has a match and the same amount.
+ * No filters (no vendor filter, no xero-number drop, no due date). Organize by supplier.
+ * One row per supplier that has at least one same-amount pair.
+ */
+exports.getDashboardTab3 = tryCatchAsync(async (req, res) => {
+    const unpaidInvoices = await Invoice.find({
+        status: "unpaid",
+        isDeleted: { $ne: true },
+    })
+        .lean();
+    const contactIds = [...new Set(unpaidInvoices.map((inv) => inv.contactId).filter(Boolean))];
+    const vendors = contactIds.length > 0
+        ? await Vendor.find({ xeroId: { $in: contactIds }, isDeleted: { $ne: true } })
+            .select("xeroId name")
+            .lean()
+        : [];
+    const vendorNameByContactId = new Map(vendors.map((v) => [v.xeroId, v.name || v.xeroId]));
+
+    const bySupplier = contactIds
+        .map((contactId) => {
+            const supplierInvoices = unpaidInvoices.filter((inv) => inv.contactId === contactId);
+            const byInvoiceNumber = new Map();
+            for (const inv of supplierInvoices) {
+                const num = inv.invoiceNumber || "";
+                if (!byInvoiceNumber.has(num)) byInvoiceNumber.set(num, []);
+                byInvoiceNumber.get(num).push(inv);
+            }
+            const sameAmountPairs = [];
+            for (const [, invs] of byInvoiceNumber) {
+                const fileInv = invs.find((i) => i.fromXero === false);
+                const xeroInv = invs.find((i) => i.fromXero === true);
+                if (!fileInv || !xeroInv) continue;
+                const fileAmount = Number(fileInv.amount) || 0;
+                const xeroAmount = Number(xeroInv.amount) || 0;
+                const fileRounded = Math.round(fileAmount * 100) / 100;
+                const xeroRounded = Math.round(xeroAmount * 100) / 100;
+                if (fileRounded === xeroRounded) {
+                    sameAmountPairs.push({ fileInvoice: fileInv, xeroInvoice: xeroInv });
+                }
+            }
+            if (sameAmountPairs.length === 0) return null;
+            const theySay = sameAmountPairs.reduce(
+                (sum, p) => sum + (Number(p.fileInvoice?.amount) || 0),
+                0
+            );
+            const xeroSays = sameAmountPairs.reduce(
+                (sum, p) => sum + (Number(p.xeroInvoice?.amount) || 0),
+                0
+            );
+            const unpaidCount = sameAmountPairs.length * 2;
+            return {
+                contactId,
+                supplier: vendorNameByContactId.get(contactId) || contactId,
+                pairs: sameAmountPairs,
+                theySay,
+                xeroSays,
+                unpaid: unpaidCount,
+            };
+        })
+        .filter(Boolean);
     res.status(200).json({ success: true, bySupplier });
 });

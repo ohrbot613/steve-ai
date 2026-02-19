@@ -113,7 +113,7 @@ export default function Activity() {
                                             ? firstId.slice(2)
                                             : firstId;
                                     const statementHref =
-                                        statementId != null ? `/single-statement/${String(statementId)}` : null;
+                                        statementId != null ? `/v1/single-statement/${String(statementId)}` : null;
 
                                     return (
                                         <div

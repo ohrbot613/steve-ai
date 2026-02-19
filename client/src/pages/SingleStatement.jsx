@@ -175,10 +175,10 @@ export default function SingleStatement() {
             navigate(-1);
         } else if (fromSupplierLogs && supplierId) {
             // Go back to supplier logs
-            navigate(`/suppliers-logs/${supplierId}?name=${encodeURIComponent(supplierName)}`);
+            navigate(`/v1/suppliers-logs/${supplierId}?name=${encodeURIComponent(supplierName)}`);
         } else {
             // Default: go back to all statements (route is /statements)
-            navigate('/statements');
+            navigate('/v1/statements');
         }
     }
 

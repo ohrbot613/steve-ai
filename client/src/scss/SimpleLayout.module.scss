@@ -31,3 +31,33 @@
     transform: rotate(360deg);
   }
 }
+
+// Small fixed icon bottom-left to open v1 (full) app
+.v1Icon {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #94A3B8;
+  background-color: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  text-decoration: none;
+  z-index: 50;
+  transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+
+  &:hover {
+    color: #E2E8F0;
+    background-color: rgba(51, 65, 85, 0.95);
+    border-color: rgba(148, 163, 184, 0.35);
+  }
+}
+
+.v1IconLabel {
+  font-family: inherit;
+}

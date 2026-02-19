@@ -1,12 +1,10 @@
 import { useState, useCallback, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAppMode } from "../context/AppModeContext";
+import { useNavigate, Link } from "react-router-dom";
 import ReportErrorModal from "./ReportErrorModal";
 import styles from "../scss/Top.module.scss";
 import layoutStyles from "../scss/SimpleLayout.module.scss";
 
 export default function SimpleLayout({ children }) {
-  const { appMode, setAppMode } = useAppMode();
   const navigate = useNavigate();
   const [showReportError, setShowReportError] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
@@ -58,26 +56,6 @@ export default function SimpleLayout({ children }) {
                 "+ Upload Statements"
               )}
             </button>
-            <div
-              className={styles.appModeSwitch}
-              role="switch"
-              aria-checked={appMode === "simple"}
-            >
-              <button
-                type="button"
-                className={`${styles.appModeBtn} ${appMode === "full" ? styles.appModeBtnActive : ""}`}
-                onClick={() => setAppMode("full")}
-              >
-                Full app
-              </button>
-              <button
-                type="button"
-                className={`${styles.appModeBtn} ${appMode === "simple" ? styles.appModeBtnActive : ""}`}
-                onClick={() => setAppMode("simple")}
-              >
-                Simple
-              </button>
-            </div>
             <button
               type="button"
               className={styles.reportErrorButton}
@@ -105,6 +83,20 @@ export default function SimpleLayout({ children }) {
         <ReportErrorModal onClose={() => setShowReportError(false)} />
       )}
       <main>{children}</main>
+      <Link
+        to="/v1"
+        className={layoutStyles.v1Icon}
+        title="Open full app (v1)"
+        aria-label="Open full app (v1)"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect width="7" height="9" x="3" y="3" rx="1" />
+          <rect width="7" height="5" x="14" y="3" rx="1" />
+          <rect width="7" height="9" x="14" y="12" rx="1" />
+          <rect width="7" height="5" x="3" y="16" rx="1" />
+        </svg>
+        <span className={layoutStyles.v1IconLabel}>v1</span>
+      </Link>
     </div>
   );
 }

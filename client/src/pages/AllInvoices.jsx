@@ -113,7 +113,7 @@ export default function AllInvoices() {
 
     function handleRowClick(invoice) {
         if (invoice.statementId?._id) {
-            navigate(`/single-statement/${invoice.statementId._id}`, {
+            navigate(`/v1/single-statement/${invoice.statementId._id}`, {
                 state: { from: 'all-invoices' }
             });
         }
