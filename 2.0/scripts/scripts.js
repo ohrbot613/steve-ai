@@ -515,13 +515,14 @@ exports.getAllInvoices = tryCatchAsync(async (req, res) => {
 });
 
 /**
- * Fire-and-forget: if team.updateInXeroInProgress is false and team.lastXeroLookup is older than 30 min, fetch suppliers (contacts) and invoices from Xero modified since then and upsert to DB. Uses same loading flag and dates for both. Call with req (must have req.user, req.xeroAccessToken, req.xeroTenantId).
+ * Fire-and-forget: if team.updateInXeroInProgress is false and team.lastXeroLookup is older than 30 min, fetch invoices from Xero modified since then and upsert to DB. Call with req (must have req.user, req.xeroAccessToken, req.xeroTenantId). Uses team.updateInXeroInProgress so only one sync runs per tenant (works across processes).
  */
 exports.syncIncrementalInvoicesFromXero = async function syncIncrementalInvoicesFromXero(req) {
     const teamTenantId = req.user?.tenant != null ? String(req.user.tenant) : null;
     if (!teamTenantId) return;
     const team = await Team.findOne({ tenantId: teamTenantId }).lean();
     if (!team) return;
+console.log(team.updateInXeroInProgress)
     if (team.updateInXeroInProgress) return;
 
     const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
@@ -531,186 +532,103 @@ exports.syncIncrementalInvoicesFromXero = async function syncIncrementalInvoices
     if (isWithinLast30Min || !req.xeroAccessToken || !req.xeroTenantId) return;
 
     await Team.updateOne({ tenantId: teamTenantId }, { $set: { updateInXeroInProgress: true } });
-    console.log("[API 2.0] incremental sync: started", { teamTenantId, step: "started" });
     try {
-        const ifModifiedSince = team.lastXeroLookup ? new Date(team.lastXeroLookup) : new Date(thirtyMinAgo);
-        const tenantId = req.xeroTenantId;
-        const xeroClient = new XeroClient();
-        xeroClient.setTokenSet({ access_token: req.xeroAccessToken });
-        const maxRetries = 5;
 
-        // --- Incremental sync: suppliers (contacts) ---
-        console.log("[API 2.0] incremental sync: step", { teamTenantId, step: "suppliers" });
-        const allSuppliers = [];
-        let page = 1;
-        let hasMore = true;
-        while (hasMore) {
-            let result;
-            let retries = 0;
-            while (true) {
-                try {
-                    result = await xeroClient.accountingApi.getContacts(
-                        tenantId,
-                        ifModifiedSince,
-                        "IsSupplier==true",
-                        undefined,
-                        undefined,
-                        page,
-                        true,
-                        false,
-                        undefined,
-                        PAGE_SIZE
-                    );
-                    break;
-                } catch (err) {
-                    const status = err?.response?.statusCode ?? err?.statusCode;
-                    const retryAfterSec = parseInt(err?.response?.headers?.["retry-after"] ?? err?.headers?.["retry-after"], 10) || 6;
-                    const isRateLimit = status === 429;
-                    const isServerError = status && status >= 500;
-                    if ((isRateLimit || isServerError) && retries < maxRetries) {
-                        retries += 1;
-                        await sleep(retryAfterSec * 1000);
-                    } else {
-                        console.error("[API 2.0] incremental suppliers fetch error:", err?.message || err);
-                        throw err;
-                    }
-                }
-            }
-            const contacts = result.body?.contacts || [];
-            allSuppliers.push(...contacts);
-            hasMore = contacts.length === PAGE_SIZE;
-            page += 1;
-            if (hasMore) await sleep(XERO_PAGE_DELAY_MS);
-        }
+    const ifModifiedSince = team.lastXeroLookup ? new Date(team.lastXeroLookup) : new Date(thirtyMinAgo);
+    const tenantId = req.xeroTenantId;
+    const xeroClient = new XeroClient();
+    xeroClient.setTokenSet({ access_token: req.xeroAccessToken });
 
-        if (allSuppliers.length > 0) {
-            const now = new Date();
-            const xeroIds = allSuppliers.map((c) => c.contactID);
-            const existingVendors = await Vendor.find({ xeroId: { $in: xeroIds } }).select("_id xeroId").lean();
-            const existingByXeroId = new Map(existingVendors.map((doc) => [doc.xeroId, doc._id]));
+    const allInvoices = [];
+    let page = 1;
+    let hasMore = true;
 
-            const bulkOps = [];
-            for (const contact of allSuppliers) {
-                const pt = getSupplierPaymentTerms(contact);
-                const paymentTerms = pt
-                    ? { day: pt.day, type: pt.type != null ? String(pt.type).toLowerCase() : null }
-                    : { day: null, type: null };
-                const isSupplier = contact.isSupplier === true || contact.IsSupplier === true;
-                const doc = {
-                    name: contact.name || "Unknown",
-                    email: contact.emailAddress || null,
-                    modifiedLast: now,
-                    paymentTerms,
-                    supplier: isSupplier,
-                };
-                const existingId = existingByXeroId.get(contact.contactID);
-                if (existingId) {
-                    bulkOps.push({ updateOne: { filter: { _id: existingId }, update: { $set: doc } } });
+    const maxRetries = 5;
+
+    while (hasMore) {
+        let result;
+        let retries = 0;
+        while (true) {
+            try {
+                result = await xeroClient.accountingApi.getInvoices(
+                    tenantId,
+                    ifModifiedSince,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    page,
+                    true,
+                    undefined,
+                    undefined,
+                    false,
+                    PAGE_SIZE,
+                    undefined
+                );
+                break;
+            } catch (err) {
+                const status = err?.response?.statusCode ?? err?.statusCode;
+                const retryAfterSec = parseInt(err?.response?.headers?.["retry-after"] ?? err?.headers?.["retry-after"], 10) || 6;
+                const isRateLimit = status === 429;
+                const isServerError = status && status >= 500;
+                if ((isRateLimit || isServerError) && retries < maxRetries) {
+                    retries += 1;
+                    await sleep(retryAfterSec * 1000);
                 } else {
-                    bulkOps.push({
-                        insertOne: {
-                            document: {
-                                xeroId: contact.contactID,
-                                ...doc,
-                                createdAt: now,
-                            },
-                        },
-                    });
+                    console.error("[API 2.0] incremental invoice fetch error:", err?.message || err);
+                    return;
                 }
             }
-            await Vendor.bulkWrite(bulkOps);
-            console.log("[API 2.0] incremental sync: step finished", { teamTenantId, step: "suppliers", count: allSuppliers.length });
         }
+        const invoices = result.body?.invoices || [];
+        allInvoices.push(...invoices);
+        hasMore = invoices.length === PAGE_SIZE;
+        console.log(page)
+        page += 1;
+        if (hasMore) await sleep(XERO_PAGE_DELAY_MS);
+    }
 
-        // --- Incremental sync: invoices ---
-        console.log("[API 2.0] incremental sync: step", { teamTenantId, step: "invoices" });
-        const allInvoices = [];
-        page = 1;
-        hasMore = true;
-        while (hasMore) {
-            let result;
-            let retries = 0;
-            while (true) {
-                try {
-                    result = await xeroClient.accountingApi.getInvoices(
-                        tenantId,
-                        ifModifiedSince,
-                        undefined,
-                        undefined,
-                        undefined,
-                        undefined,
-                        undefined,
-                        undefined,
-                        page,
-                        true,
-                        undefined,
-                        undefined,
-                        false,
-                        PAGE_SIZE,
-                        undefined
-                    );
-                    break;
-                } catch (err) {
-                    const status = err?.response?.statusCode ?? err?.statusCode;
-                    const retryAfterSec = parseInt(err?.response?.headers?.["retry-after"] ?? err?.headers?.["retry-after"], 10) || 6;
-                    const isRateLimit = status === 429;
-                    const isServerError = status && status >= 500;
-                    if ((isRateLimit || isServerError) && retries < maxRetries) {
-                        retries += 1;
-                        await sleep(retryAfterSec * 1000);
-                    } else {
-                        console.error("[API 2.0] incremental invoice fetch error:", err?.message || err);
-                        throw err;
-                    }
-                }
+    if (allInvoices.length > 0) {
+        const now = new Date();
+        const invoiceNumbers = allInvoices.map((inv) => inv.invoiceNumber || inv.invoiceID || `xero-${inv.invoiceID}`);
+        const existingFromXero = await Invoice.find({ invoiceNumber: { $in: invoiceNumbers }, fromXero: true })
+            .select("_id invoiceNumber")
+            .lean();
+        const existingByNumber = new Map(existingFromXero.map((doc) => [doc.invoiceNumber, doc._id]));
+
+        const bulkOps = [];
+        for (const inv of allInvoices) {
+            const paymentStatus = inv.amountDue === 0 || (inv.amountPaid != null && inv.amountPaid >= (inv.total || 0)) ? "paid" : "unpaid";
+            const invoiceNumber = inv.invoiceNumber || inv.invoiceID || `xero-${inv.invoiceID}`;
+            const doc = {
+                invoiceNumber,
+                amount: inv.total ?? null,
+                status: paymentStatus,
+                jobNumber: inv.reference || null,
+                description: inv.lineItems?.[0]?.description || null,
+                contactId: inv.contact?.contactID || null,
+                currency: inv.currencyCode || null,
+                date: inv.date ? new Date(inv.date) : null,
+                dueDate: inv.dueDate ? new Date(inv.dueDate) : null,
+                fromXero: true,
+                modifiedLast: now,
+            };
+            const existingId = existingByNumber.get(invoiceNumber);
+            if (existingId) {
+                bulkOps.push({ updateOne: { filter: { _id: existingId }, update: { $set: doc } } });
+            } else {
+                bulkOps.push({ insertOne: { document: doc } });
             }
-            const invoices = result.body?.invoices || [];
-            allInvoices.push(...invoices);
-            hasMore = invoices.length === PAGE_SIZE;
-            page += 1;
-            if (hasMore) await sleep(XERO_PAGE_DELAY_MS);
         }
+        await Invoice.bulkWrite(bulkOps);
+        console.log("[API 2.0] incremental sync: upserted", allInvoices.length, "invoice(s) from Xero since", ifModifiedSince.toISOString());
+    }
 
-        if (allInvoices.length > 0) {
-            const now = new Date();
-            const invoiceNumbers = allInvoices.map((inv) => inv.invoiceNumber || inv.invoiceID || `xero-${inv.invoiceID}`);
-            const existingFromXero = await Invoice.find({ invoiceNumber: { $in: invoiceNumbers }, fromXero: true })
-                .select("_id invoiceNumber")
-                .lean();
-            const existingByNumber = new Map(existingFromXero.map((doc) => [doc.invoiceNumber, doc._id]));
-
-            const bulkOps = [];
-            for (const inv of allInvoices) {
-                const paymentStatus = inv.amountDue === 0 || (inv.amountPaid != null && inv.amountPaid >= (inv.total || 0)) ? "paid" : "unpaid";
-                const invoiceNumber = inv.invoiceNumber || inv.invoiceID || `xero-${inv.invoiceID}`;
-                const doc = {
-                    invoiceNumber,
-                    amount: inv.total ?? null,
-                    status: paymentStatus,
-                    jobNumber: inv.reference || null,
-                    description: inv.lineItems?.[0]?.description || null,
-                    contactId: inv.contact?.contactID || null,
-                    currency: inv.currencyCode || null,
-                    date: inv.date ? new Date(inv.date) : null,
-                    dueDate: inv.dueDate ? new Date(inv.dueDate) : null,
-                    fromXero: true,
-                    modifiedLast: now,
-                };
-                const existingId = existingByNumber.get(invoiceNumber);
-                if (existingId) {
-                    bulkOps.push({ updateOne: { filter: { _id: existingId }, update: { $set: doc } } });
-                } else {
-                    bulkOps.push({ insertOne: { document: doc } });
-                }
-            }
-            await Invoice.bulkWrite(bulkOps);
-            console.log("[API 2.0] incremental sync: step finished", { teamTenantId, step: "invoices", count: allInvoices.length });
-        }
-
-        await Team.updateOne({ tenantId: teamTenantId }, { $set: { lastXeroLookup: new Date() } });
+    await Team.updateOne({ tenantId: teamTenantId }, { $set: { lastXeroLookup: new Date() } });
     } finally {
         await Team.updateOne({ tenantId: teamTenantId }, { $set: { updateInXeroInProgress: false } });
-        console.log("[API 2.0] incremental sync: finished", { teamTenantId, step: "finished" });
     }
 };
 

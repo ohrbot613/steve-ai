@@ -5,6 +5,7 @@ import modalStyle from "../scss/Modal.module.scss"
 import UserProfile from "./UserProfile"
 import ReportErrorModal from "./ReportErrorModal"
 import { formatCurrency } from '../utils/currencyUtils'
+import { useAppMode } from '../context/AppModeContext'
 
 const DASHBOARD_STATS_URL = "/api/v2/dashboard/stats";
 const RELOAD_SUPPLIERS_URL = "/api/v2/scripts/get-all-vendors";
@@ -15,6 +16,7 @@ const RELOADING_POLL_MS = 6000;
 export default function Top() {
     const navigate = useNavigate();
     const location = useLocation();
+    const { appMode, setAppMode } = useAppMode();
     const [showReportError, setShowReportError] = useState(false);
     const [bankBalance, setBankBalance] = useState(null);
     const [balanceLoading, setBalanceLoading] = useState(true);
@@ -164,6 +166,22 @@ export default function Top() {
                     </div>
                 </div>
                 <div className={styles.topRight}>
+                    <div className={styles.appModeSwitch} role="switch" aria-checked={appMode === 'simple'}>
+                        <button
+                            type="button"
+                            className={`${styles.appModeBtn} ${appMode === 'full' ? styles.appModeBtnActive : ''}`}
+                            onClick={() => setAppMode('full')}
+                        >
+                            Full app
+                        </button>
+                        <button
+                            type="button"
+                            className={`${styles.appModeBtn} ${appMode === 'simple' ? styles.appModeBtnActive : ''}`}
+                            onClick={() => setAppMode('simple')}
+                        >
+                            Simple
+                        </button>
+                    </div>
                     <div className={styles.userBalance}>
                         <span className={styles.userBalanceLabel}>
                             Bank balance

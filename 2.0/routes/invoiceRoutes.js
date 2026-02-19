@@ -16,5 +16,12 @@ router.post(
     invoiceController.completeInvoiceFileUpload
 );
 
+// Batch: multiple files, one activity log with s- / i- prefixed ids
+router.post(
+    "/batch-invoice-file-upload",
+    invoiceController.upload.array("files", 50),
+    invoiceController.handleMulterError,
+    invoiceController.batchInvoiceFileUpload
+);
 
 module.exports = router;

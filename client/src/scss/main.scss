@@ -28,6 +28,18 @@ body {
     font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
     background-color: rgb(248 250 252);
 
+    &.app-mode-simple {
+        background-color: #090A0E;
+    }
+}
+
+.appContent {
+    transition: margin-right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    &--simple {
+        background-color: #090A0E;
+        min-height: 100vh;
+    }
 }
 
 button {

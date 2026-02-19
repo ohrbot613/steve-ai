@@ -50,6 +50,15 @@ const vendorSchema = new mongoose.Schema(
                 default: null
             },
         },
+        contactedAt: {
+            type: [
+                {
+                    date: { type: Date, required: true },
+                    invoiceIds: [{ type: mongoose.Schema.Types.ObjectId, ref: "Invoice" }],
+                },
+            ],
+            default: [],
+        },
     },
 
 );

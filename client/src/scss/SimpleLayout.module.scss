@@ -1,0 +1,33 @@
+// Shell for the simple app: full-height dark background only.
+// Nav bar styles live in Top.module.scss (.topWrapperDark).
+
+.root {
+  min-height: 100vh;
+  background-color: #090A0E;
+}
+
+.logoutLabel {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.uploadBtnLoading {
+  cursor: not-allowed;
+  opacity: 0.9;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.uploadBtnSpinner {
+  display: inline-flex;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+  animation: simpleLayoutSpin 0.8s linear infinite;
+}
+
+@keyframes simpleLayoutSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}

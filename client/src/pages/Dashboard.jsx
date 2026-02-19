@@ -81,7 +81,39 @@ export default function Dashboard() {
         const successes = [];
         const errors = [];
         try {
-            for (const file of fileArray) {
+            if (fileArray.length > 1) {
+                // Batch upload: one request, one activity log for all
+                const formData = new FormData();
+                fileArray.forEach((file) => formData.append("files", file));
+                const response = await fetch("/api/v2/invoice/batch-invoice-file-upload", {
+                    method: "POST",
+                    body: formData,
+                    credentials: "include",
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    setUploadError(data.message || "Batch upload failed");
+                    return;
+                }
+                (data.results || []).forEach((r) =>
+                    successes.push({ fileName: r.fileName, createdCount: r.createdCount ?? 0 })
+                );
+                (data.errors || []).forEach((e) => errors.push({ fileName: e.fileName, error: e.error }));
+                if (successes.length > 0) {
+                    const totalCreated = successes.reduce((s, x) => s + x.createdCount, 0);
+                    let msg = `${successes.length} file(s) processed.`;
+                    if (totalCreated > 0) msg += ` ${totalCreated} invoice(s) saved.`;
+                    if (errors.length > 0) msg += ` ${errors.length} failed.`;
+                    setUploadSuccess(msg);
+                    fetchStats();
+                }
+                if (errors.length > 0 && successes.length === 0) {
+                    setUploadError(
+                        errors.length === 1 ? errors[0].error : errors.map((e) => `${e.fileName}: ${e.error}`).join("; ")
+                    );
+                }
+            } else {
+                const file = fileArray[0];
                 const formData = new FormData();
                 formData.append("file", file);
                 const response = await fetch("/api/v2/invoice/invoice-file-upload", {
@@ -92,30 +124,22 @@ export default function Dashboard() {
                 const data = await response.json();
                 if (!response.ok) {
                     errors.push({ fileName: file.name, error: data.message || "Failed to parse file" });
-                    continue;
-                }
-                if (data.success) {
+                } else if (data.success) {
                     const createdCount = data.createdCount ?? (data.created?.length ?? 0);
                     successes.push({ fileName: file.name, createdCount });
                 } else {
                     errors.push({ fileName: file.name, error: data.message || "Failed to process file" });
                 }
-            }
-            if (successes.length > 0) {
-                const totalCreated = successes.reduce((s, x) => s + x.createdCount, 0);
-                let msg =
-                    successes.length === 1
-                        ? `"${successes[0].fileName}" processed.`
-                        : `${successes.length} file(s) processed.`;
-                if (totalCreated > 0) msg += ` ${totalCreated} invoice(s) saved.`;
-                if (errors.length > 0) msg += ` ${errors.length} failed.`;
-                setUploadSuccess(msg);
-                fetchStats();
-            }
-            if (errors.length > 0 && successes.length === 0) {
-                setUploadError(
-                    errors.length === 1 ? errors[0].error : errors.map((e) => `${e.fileName}: ${e.error}`).join("; ")
-                );
+                if (successes.length > 0) {
+                    const totalCreated = successes.reduce((s, x) => s + x.createdCount, 0);
+                    let msg = `"${successes[0].fileName}" processed.`;
+                    if (totalCreated > 0) msg += ` ${totalCreated} invoice(s) saved.`;
+                    setUploadSuccess(msg);
+                    fetchStats();
+                }
+                if (errors.length > 0 && successes.length === 0) {
+                    setUploadError(errors[0].error);
+                }
             }
         } catch (err) {
             setUploadError(err.message || "Upload failed");

@@ -108,7 +108,12 @@ export default function Activity() {
                                         : "System";
                                     const dateStr = formatDate(log.createdAt);
                                     const firstId = log.ids?.[0];
-                                    const statementHref = firstId != null ? `/single-statement/${String(firstId)}` : null;
+                                    const statementId =
+                                        typeof firstId === "string" && firstId.startsWith("s-")
+                                            ? firstId.slice(2)
+                                            : firstId;
+                                    const statementHref =
+                                        statementId != null ? `/single-statement/${String(statementId)}` : null;
 
                                     return (
                                         <div
