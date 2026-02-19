@@ -22,39 +22,12 @@ const DASHBOARD_DATA_URL = "/api/v2/dashboard/dashboard-data";
 const DASHBOARD_TAB2_URL = "/api/v2/dashboard/dashboard-tab-2";
 const TAB2_PAGE_SIZE = 50;
 
-const DUMMY_SUMMARY = {
-  latestUploadCount: 10,
-  suppliersReconciled: 0,
-  suppliersWithIssues: 10,
-  missingCount: 30,
-  mismatchCount: 13,
-  suppliersSayWeOwe: 445_783.25,
-  xeroSaysWeOwe: 411_811.92,
-};
-
 const ALLOWED_TYPES = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.ms-excel",
 ];
 const ALLOWED_EXT = [".pdf", ".xlsx", ".xls"];
-
-const DUMMY_TABLE_DATA = [
-  { supplier: "Pacific Seafood Ltd", theySay: 77043.43, xeroSays: 82597.08, unpaid: 15, issues: 6, status: "Contacted" },
-  { supplier: "Alpine Meat Processors", theySay: 37000.05, xeroSays: 35191.62, unpaid: 6, issues: 6, status: "Action Needed" },
-  { supplier: "Metro Dairy Co.", theySay: 35987.6, xeroSays: 43983.57, unpaid: 10, issues: 5, status: "Contacted" },
-  { supplier: "Verde Organic Farms", theySay: 41575.73, xeroSays: 45689.53, unpaid: 4, issues: 5, status: "Contacted" },
-  { supplier: "Harvest Moon Foods", theySay: 51073.79, xeroSays: 59235.42, unpaid: 5, issues: 4, status: "Contacted" },
-  { supplier: "Premier Wine Distributors", theySay: 63463.45, xeroSays: 65167.49, unpaid: 11, issues: 4, status: "Awaiting Reply - 9d" },
-  { supplier: "Sunrise Bakery Wholesale", theySay: 81711.27, xeroSays: 77281.51, unpaid: 15, issues: 3, status: "Awaiting Reply - 14d" },
-  { supplier: "Blue Coast Beverages", theySay: 41201.8, xeroSays: 44547.64, unpaid: 14, issues: 3, status: "Action Needed" },
-];
-
-const DUMMY_INVOICES_NEED_ATTENTION = [
-  { invoiceNumber: "INV-00701", date: "2025-01-27", issue: "MISSING FROM XERO", supplierAmt: 1246.26, xeroAmt: null, difference: 1246.26 },
-  { invoiceNumber: "INV-00702", date: "2025-02-04", issue: "MISSING FROM XERO", supplierAmt: 1893.67, xeroAmt: null, difference: 1893.67 },
-  { invoiceNumber: "INV-00703", date: "2025-03-12", issue: "MISSING FROM XERO", supplierAmt: 1760.73, xeroAmt: null, difference: 1760.73 },
-];
 
 function getTableDataForTab(tab, dashboardData, tab2Data) {
   if (tab === "latest") {
@@ -94,15 +67,15 @@ function getTableDataForTab(tab, dashboardData, tab2Data) {
           unpaid: (s.invoices || []).length,
           issues,
           status: "Action Needed",
+          pairs: s.pairs || [],
+          unpairedInvoices: s.unpairedInvoices || [],
         };
       });
     }
-    return DUMMY_TABLE_DATA.filter(
-      (row) => row.status === "Action Needed" || row.status.startsWith("Awaiting Reply")
-    );
+    return [];
   }
   if (tab === "reconciled") {
-    return DUMMY_TABLE_DATA.filter((row) => row.status === "Contacted");
+    return [];
   }
   return [];
 }
@@ -192,22 +165,7 @@ function formatLogDateTime(createdAt) {
   return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} · ${d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}`;
 }
 
-function useSimpleAppSummary() {
-  const { suppliersSayWeOwe, xeroSaysWeOwe, ...rest } = DUMMY_SUMMARY;
-  const difference = suppliersSayWeOwe - xeroSaysWeOwe;
-  const now = new Date();
-  const dateTime = `${now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} · ${now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}`;
-  return {
-    ...rest,
-    suppliersSayWeOwe,
-    xeroSaysWeOwe,
-    difference,
-    dateTime,
-  };
-}
-
 export default function SimpleApp() {
-  const summary = useSimpleAppSummary();
   const { data: dashboardData, loading: lastUploadLoading, refetch: refetchDashboardData } =
     useDashboardData();
   const { data: tab2Data } = useDashboardTab2();
@@ -647,17 +605,63 @@ export default function SimpleApp() {
                     const statusClass =
                       row.status === "Contacted"
                         ? styles.statusContacted
-                        : row.status === "Action Needed"
-                          ? styles.statusActionNeeded
-                          : styles.statusAwaiting;
+                        : row.status === "No action needed"
+                          ? styles.statusNoActionNeeded
+                          : row.status === "Action Needed"
+                            ? styles.statusActionNeeded
+                            : styles.statusAwaiting;
                     const rowKey = row.contactId ?? row.supplier;
                     const isExpanded = expandedRows.has(rowKey);
                     const detailInvoices =
                       activeTab === "latest" && Array.isArray(row.invoicesNeedAttention) && row.invoicesNeedAttention.length > 0
                         ? row.invoicesNeedAttention
-                        : DUMMY_INVOICES_NEED_ATTENTION;
+                        : [];
                     const viewAllInvoices = activeTab === "latest" && Array.isArray(row.invoicesViewAll) ? row.invoicesViewAll : [];
-                    const totalUnpaidCount = detailInvoices.length + viewAllInvoices.length;
+                    const tab2Pairs = activeTab === "attention" ? (row.pairs || []) : [];
+                    const tab2Unpaired = activeTab === "attention" ? (row.unpairedInvoices || []) : [];
+                    const attentionDetailInvoices =
+                      activeTab === "attention"
+                        ? [
+                            ...(tab2Pairs || []).map((p) => {
+                              const fa = Number(p.fileInvoice?.amount) ?? 0;
+                              const xa = Number(p.xeroInvoice?.amount) ?? 0;
+                              const date = p.fileInvoice?.dueDate || p.xeroInvoice?.dueDate;
+                              const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
+                              return {
+                                invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
+                                date: dateStr,
+                                issue: p.label === "amount mismatch" ? "AMOUNT MISMATCH" : "Matched",
+                                supplierAmt: fa,
+                                xeroAmt: xa,
+                                difference: xa - fa,
+                              };
+                            }),
+                            ...(tab2Unpaired || []).map((u) => {
+                              const amt = Number(u.amount) || 0;
+                              const dateStr = u.dueDate ? new Date(u.dueDate).toLocaleDateString("en-GB") : "–";
+                              return {
+                                invoiceNumber: u.invoiceNumber || "—",
+                                date: dateStr,
+                                issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
+                                supplierAmt: u.fromXero ? null : amt,
+                                xeroAmt: u.fromXero ? amt : null,
+                                difference: amt,
+                              };
+                            }),
+                          ]
+                        : [];
+                    const detailRows =
+                      activeTab === "attention"
+                        ? attentionDetailInvoices
+                        : viewAllShownForRow.has(rowKey)
+                          ? viewAllInvoices
+                          : detailInvoices;
+                    const totalUnpaidCount =
+                      activeTab === "attention"
+                        ? (tab2Pairs.length * 2) + tab2Unpaired.length
+                        : viewAllInvoices.length;
+                    const latestNoIssues =
+                      activeTab === "latest" && detailInvoices.length === 0 && !viewAllShownForRow.has(rowKey);
                     return (
                       <Fragment key={`${rowKey}-${i}`}>
                         <tr
@@ -696,9 +700,15 @@ export default function SimpleApp() {
                               <div className={styles.detailPanel}>
                                 <div className={styles.detailHeader}>
                                   <h3 className={styles.detailTitle}>
-                                    {totalUnpaidCount} Unpaid invoices from supplier
+                                    {viewAllShownForRow.has(rowKey)
+                                      ? totalUnpaidCount === 0
+                                        ? "No unpaid invoices"
+                                        : `${totalUnpaidCount} Unpaid invoices from supplier`
+                                      : latestNoIssues
+                                        ? "No errors here"
+                                        : "Need your attention"}
                                   </h3>
-                                  {viewAllInvoices.length > 0 && (
+                                  {activeTab === "latest" && (
                                     <button
                                       type="button"
                                       className={styles.detailViewAll}
@@ -732,7 +742,10 @@ export default function SimpleApp() {
                                     </button>
                                   </div>
                                 </div>
-                                {(detailInvoices.length > 0 || (viewAllShownForRow.has(rowKey) && viewAllInvoices.length > 0)) && (
+                                {activeTab === "latest" && viewAllShownForRow.has(rowKey) && viewAllInvoices.length === 0 && (
+                                  <p className={styles.detailNoUnpaid}>No unpaid invoices.</p>
+                                )}
+                                {detailRows.length > 0 && (
                                 <div className={styles.detailTableWrap}>
                                   <table className={styles.detailTable}>
                                     <thead>
@@ -746,17 +759,7 @@ export default function SimpleApp() {
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {[
-                                        ...detailInvoices.map((inv) => ({ ...inv, _type: "attention" })),
-                                        ...(viewAllShownForRow.has(rowKey)
-                                          ? viewAllInvoices.map((inv) => ({
-                                              ...inv,
-                                              issue: "Matched",
-                                              difference: 0,
-                                              _type: "reconciled",
-                                            }))
-                                          : []),
-                                      ].map((inv, j) => (
+                                      {detailRows.map((inv, j) => (
                                         <tr key={inv.invoiceNumber ? `${inv.invoiceNumber}-${j}` : j}>
                                           <td className={styles.detailTd}>{inv.invoiceNumber}</td>
                                           <td className={styles.detailTd}>{inv.date || "–"}</td>
@@ -769,7 +772,9 @@ export default function SimpleApp() {
                                               </span>
                                             )}
                                           </td>
-                                          <td className={styles.detailTd}>£{formatTableAmount(inv.supplierAmt)}</td>
+                                          <td className={styles.detailTd}>
+                                            {inv.supplierAmt == null ? "–" : `£${formatTableAmount(inv.supplierAmt)}`}
+                                          </td>
                                           <td className={styles.detailTd}>{inv.xeroAmt == null ? "–" : `£${formatTableAmount(inv.xeroAmt)}`}</td>
                                           <td className={styles.detailTd}>
                                             {inv.issue === "Matched" ? (

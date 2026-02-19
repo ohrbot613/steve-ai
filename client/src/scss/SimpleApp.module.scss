@@ -335,6 +335,12 @@ $simple-border: #1A1D28;
   min-width: 180px;
 }
 
+.detailNoUnpaid {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: #94A3B8;
+}
+
 .detailViewAll {
   padding: 6px 14px;
   font-size: 12px;
@@ -501,6 +507,11 @@ $simple-border: #1A1D28;
     color: #4ADE80;
   }
 
+  &.statusNoActionNeeded {
+    background-color: rgba(34, 197, 94, 0.2);
+    color: #4ADE80;
+  }
+
   &.statusActionNeeded {
     background-color: rgba(139, 92, 246, 0.2);
     color: #A78BFA;
@@ -519,6 +530,7 @@ $simple-border: #1A1D28;
   flex-shrink: 0;
 
   .statusContacted & { background-color: #4ADE80; }
+  .statusNoActionNeeded & { background-color: #4ADE80; }
   .statusActionNeeded & { background-color: #A78BFA; }
   .statusAwaiting & { background-color: #FB923C; }
 }
