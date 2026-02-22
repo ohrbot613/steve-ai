@@ -208,6 +208,11 @@ exports.getAllVenders = tryCatchAsync(async (req, res) => {
     }
 
     const now = new Date();
+    // supplier: true only if our DB has at least one invoice with fromXero: false for this contact (nothing from Xero)
+    const contactIdsWithFileInvoices = new Set(
+        await Invoice.distinct("contactId", { fromXero: false, isDeleted: { $ne: true } })
+    );
+
     const bulkOps = allSuppliers.map((contact) => {
         const pt = getSupplierPaymentTerms(contact);
         const paymentTerms = pt
@@ -217,7 +222,7 @@ exports.getAllVenders = tryCatchAsync(async (req, res) => {
             }
             : { day: null, type: null };
 
-        const isSupplier = contact.isSupplier === true || contact.IsSupplier === true;
+        const isSupplier = contactIdsWithFileInvoices.has(contact.contactID);
         return {
             updateOne: {
                 filter: { xeroId: contact.contactID },

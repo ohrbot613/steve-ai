@@ -7,5 +7,7 @@ router.get("/unmatched-invoices-export", dashboardController.getUnmatchedInvoice
 router.get("/dashboard-data", dashboardController.getDashboardData);
 router.get("/dashboard-tab-2", dashboardController.getDashboardTab2);
 router.get("/dashboard-tab-3", dashboardController.getDashboardTab3);
+router.post("/mark-invoices-paid", dashboardController.markInvoicesPaid);
+router.post("/undo-mark-invoices-paid", dashboardController.undoMarkInvoicesPaid);
 
 module.exports = router;

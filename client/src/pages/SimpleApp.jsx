@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useRef, useState, Fragment } from "react";
+import confetti from "canvas-confetti";
 import styles from "../scss/SimpleApp.module.scss";
 import { exportToExcel } from "../utils/exportUtils";
+
+function fireConfettiFromElement(el) {
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const x = (rect.left + rect.width / 2) / window.innerWidth;
+  const y = (rect.top + rect.height / 2) / window.innerHeight;
+  confetti({
+    particleCount: 60,
+    spread: 55,
+    origin: { x, y },
+    colors: ["#4ADE80", "#22C55E", "#16A34A", "#FBBF24", "#F59E0B"],
+    decay: 0.82,
+    ticks: 90,
+  });
+}
 
 function formatAmount(amount) {
   if (amount == null || typeof amount !== "number" || Number.isNaN(amount)) return "—";
@@ -51,14 +67,18 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
   if (tab === "attention") {
     const bySupplier = tab2Data?.bySupplier;
     if (Array.isArray(bySupplier) && bySupplier.length > 0) {
-      return bySupplier.map((s) => {
+      const isPaid = (inv) => inv && inv.status === "paid";
+      const rows = bySupplier.map((s) => {
         const fileInvs = (s.invoices || []).filter((i) => i.fromXero === false);
         const xeroInvs = (s.invoices || []).filter((i) => i.fromXero === true);
-        const theySay = fileInvs.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
-        const xeroSays = xeroInvs.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
-        const amountMismatch = (s.pairs || []).filter((p) => p.label === "amount mismatch").length;
-        const unpairedInvoices = s.unpairedInvoices || [];
-        const issues = amountMismatch + unpairedInvoices.length;
+        const theySay = s.theySay != null ? s.theySay : fileInvs.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+        const xeroSays = s.xeroSays != null ? s.xeroSays : xeroInvs.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+        const allPairs = (s.pairs || []).filter(
+          (p) => !isPaid(p.fileInvoice) && !isPaid(p.xeroInvoice)
+        );
+        const pairsAmountMismatch = allPairs.filter((p) => p.label === "amount mismatch");
+        const unpairedInvoices = (s.unpairedInvoices || []).filter((u) => !isPaid(u));
+        const issues = pairsAmountMismatch.length + unpairedInvoices.length;
         return {
           supplier: s.supplier,
           contactId: s.contactId,
@@ -67,10 +87,11 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
           unpaid: (s.invoices || []).length,
           issues,
           status: "Action Needed",
-          pairs: s.pairs || [],
-          unpairedInvoices: s.unpairedInvoices || [],
+          pairs: pairsAmountMismatch,
+          unpairedInvoices,
         };
       });
+      return rows.filter((r) => r.issues > 0);
     }
     return [];
   }
@@ -80,9 +101,13 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
       return bySupplier.map((s) => ({
         supplier: s.supplier,
         contactId: s.contactId,
-        theySay: s.theySay ?? 0,
-        xeroSays: s.xeroSays ?? 0,
-        unpaid: s.unpaid ?? 0,
+        amountGBP: s.amountGBP ?? s.theySay ?? 0,
+        pairCount: s.pairCount ?? (s.pairs?.length ?? 0),
+        pairsOverdue: s.pairsOverdue ?? 0,
+        theySay: s.theySay ?? s.amountGBP ?? 0,
+        xeroSays: s.xeroSays ?? s.amountGBP ?? 0,
+        difference: s.difference ?? 0,
+        unpaid: s.pairCount ?? s.unpaid ?? 0,
         issues: 0,
         status: "Reconciled",
         pairs: s.pairs || [],
@@ -96,7 +121,7 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
 function sortTableRows(rows, sortColumn, sortDir) {
   const withDiff = rows.map((row) => ({
     ...row,
-    difference: row.xeroSays - row.theySay,
+    difference: row.difference != null ? row.difference : row.xeroSays - row.theySay,
   }));
   if (!sortColumn) return withDiff;
   const mult = sortDir === "asc" ? 1 : -1;
@@ -208,14 +233,17 @@ function formatLogDateTime(createdAt) {
 export default function SimpleApp() {
   const { data: dashboardData, loading: lastUploadLoading, refetch: refetchDashboardData } =
     useDashboardData();
-  const { data: tab2Data } = useDashboardTab2();
-  const { data: tab3Data } = useDashboardTab3();
+  const { data: tab2Data, refetch: refetchTab2 } = useDashboardTab2();
+  const { data: tab3Data, refetch: refetchTab3 } = useDashboardTab3();
   const fileInputRef = useRef(null);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState("");
   const [uploadError, setUploadError] = useState("");
-  const [activeTab, setActiveTab] = useState("reconciled");
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
+  const [activeTab, setActiveTab] = useState("attention");
   const [exportTab2Loading, setExportTab2Loading] = useState(false);
+  const [exportTab3Loading, setExportTab3Loading] = useState(false);
   const [exportingSupplierKey, setExportingSupplierKey] = useState(null);
   const [paymentSuggestionNotifyRow, setPaymentSuggestionNotifyRow] = useState(null);
   const [sortByTab, setSortByTab] = useState({
@@ -241,9 +269,44 @@ export default function SimpleApp() {
   };
 
   const tabSort = sortByTab[activeTab];
+  const [tab3OptimisticPaidIds, setTab3OptimisticPaidIds] = useState(() => new Set());
   const tableDataForTab = getTableDataForTab(activeTab, dashboardData, tab2Data, tab3Data);
+  const tableDataForDisplay =
+    activeTab === "reconciled" && tab3OptimisticPaidIds.size > 0
+      ? tableDataForTab
+          .map((row) => {
+            const pairs = (row.pairs || []).filter(
+              (p) =>
+                !tab3OptimisticPaidIds.has(String(p.fileInvoice?._id)) &&
+                !tab3OptimisticPaidIds.has(String(p.xeroInvoice?._id))
+            );
+            if (pairs.length === 0) return null;
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            const pairsOverdue = pairs.filter((p) => {
+              const d = p.fileInvoice?.dueDate || p.fileInvoice?.date || p.xeroInvoice?.dueDate || p.xeroInvoice?.date;
+              if (!d) return false;
+              const due = new Date(d);
+              due.setHours(0, 0, 0, 0);
+              return due.getTime() < todayStart.getTime();
+            }).length;
+            const amountGBP = pairs.reduce((sum, p) => sum + (p.fileAmountGBP ?? Number(p.fileInvoice?.amount) ?? 0), 0);
+            const amountGBPRounded = Math.round(amountGBP * 100) / 100;
+            return {
+              ...row,
+              pairs,
+              pairCount: pairs.length,
+              pairsOverdue,
+              amountGBP: amountGBPRounded,
+              theySay: amountGBPRounded,
+              xeroSays: amountGBPRounded,
+              unpaid: pairs.length,
+            };
+          })
+          .filter(Boolean)
+      : tableDataForTab;
   const sortedTableData = sortTableRows(
-    tableDataForTab,
+    tableDataForDisplay,
     tabSort.column,
     tabSort.dir
   );
@@ -289,6 +352,124 @@ export default function SimpleApp() {
     });
   };
 
+  // Tab 3 (reconciled): selected invoice ids for bulk actions (e.g. Paid)
+  const [tab3SelectedIds, setTab3SelectedIds] = useState(() => new Set());
+  const toggleTab3InvoiceSelection = (id) => {
+    setTab3SelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleTab3SelectAllForRow = (rowKey, invoiceIds) => {
+    setTab3SelectedIds((prev) => {
+      const next = new Set(prev);
+      const allSelected = invoiceIds.every((id) => next.has(id));
+      if (allSelected) {
+        invoiceIds.forEach((id) => next.delete(id));
+      } else {
+        invoiceIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  // Toast after marking invoices paid (bottom right, Undo for 5s)
+  const [tab3PaidToast, setTab3PaidToast] = useState({ visible: false, invoiceIds: [], message: "" });
+  const tab3PaidToastTimeoutRef = useRef(null);
+
+  const handleMarkPaid = useCallback(async (row, indices, rowKey) => {
+    if (!row?.pairs?.length) return;
+    const invoiceIds = indices.flatMap((j) => {
+      const p = row.pairs[j];
+      if (!p?.fileInvoice?._id || !p?.xeroInvoice?._id) return [];
+      return [String(p.fileInvoice._id), String(p.xeroInvoice._id)];
+    });
+    if (invoiceIds.length === 0) return;
+    setTab3OptimisticPaidIds((prev) => new Set([...prev, ...invoiceIds]));
+    const pairCount = indices.length;
+    const message = pairCount === 1 ? "1 invoice marked as paid" : `${pairCount} invoices marked as paid`;
+    setTab3PaidToast({ visible: true, invoiceIds, message });
+    setTab3SelectedIds((prev) => {
+      const next = new Set(prev);
+      indices.forEach((j) => next.delete(`${rowKey}-${j}`));
+      return next;
+    });
+    if (tab3PaidToastTimeoutRef.current) clearTimeout(tab3PaidToastTimeoutRef.current);
+    tab3PaidToastTimeoutRef.current = setTimeout(() => {
+      setTab3PaidToast((t) => ({ ...t, visible: false }));
+      tab3PaidToastTimeoutRef.current = null;
+    }, 5000);
+    try {
+      const res = await fetch("/api/v2/dashboard/mark-invoices-paid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceIds }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setTab3OptimisticPaidIds((prev) => {
+          const next = new Set(prev);
+          invoiceIds.forEach((id) => next.delete(id));
+          return next;
+        });
+        if (tab3PaidToastTimeoutRef.current) {
+          clearTimeout(tab3PaidToastTimeoutRef.current);
+          tab3PaidToastTimeoutRef.current = null;
+        }
+        setTab3PaidToast((t) => ({ ...t, visible: false }));
+        throw new Error(data.message || "Failed to mark as paid");
+      }
+      refetchTab3().then(() => {
+        setTab3OptimisticPaidIds((prev) => {
+          const next = new Set(prev);
+          invoiceIds.forEach((id) => next.delete(id));
+          return next;
+        });
+      });
+    } catch (err) {
+      console.error(err);
+      alert(err.message || "Failed to mark as paid");
+    }
+  }, [refetchTab3]);
+
+  const handleUndoPaid = useCallback(async () => {
+    const { invoiceIds } = tab3PaidToast;
+    if (!invoiceIds?.length) return;
+    if (tab3PaidToastTimeoutRef.current) {
+      clearTimeout(tab3PaidToastTimeoutRef.current);
+      tab3PaidToastTimeoutRef.current = null;
+    }
+    setTab3OptimisticPaidIds((prev) => {
+      const next = new Set(prev);
+      invoiceIds.forEach((id) => next.delete(id));
+      return next;
+    });
+    setTab3PaidToast((t) => ({ ...t, visible: false }));
+    try {
+      const res = await fetch("/api/v2/dashboard/undo-mark-invoices-paid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ invoiceIds }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setTab3OptimisticPaidIds((prev) => new Set([...prev, ...invoiceIds]));
+        throw new Error(data.message || "Failed to undo");
+      }
+      refetchTab3();
+    } catch (err) {
+      console.error(err);
+      alert(err.message || "Failed to undo");
+    }
+  }, [tab3PaidToast.invoiceIds, refetchTab3]);
+
+  useEffect(() => {
+    return () => {
+      if (tab3PaidToastTimeoutRef.current) clearTimeout(tab3PaidToastTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     const openPicker = () => fileInputRef.current?.click();
@@ -323,11 +504,9 @@ export default function SimpleApp() {
     : Array.isArray(dashboardData?.contactIdsInPaired)
       ? dashboardData.contactIdsInPaired.length
       : 0;
-  const suppliersWithIssues = Array.isArray(dashboardData?.contactIdsInNonPaired)
-    ? dashboardData.contactIdsInNonPaired.length
-    : 0;
-
   const attentionTableData = getTableDataForTab("attention", dashboardData, tab2Data);
+  const suppliersWithIssues = attentionTableData.length;
+
   const needsAttentionCount = attentionTableData.reduce(
     (sum, row) => sum + (row.issues ?? 0),
     0
@@ -352,23 +531,25 @@ export default function SimpleApp() {
             supplier,
             issue: "AMOUNT MISMATCH",
             invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
-            fileAmount: Number(fileInv.amount) ?? "",
-            xeroAmount: Number(xeroInv.amount) ?? "",
-            currency: fileInv.currency ?? xeroInv.currency ?? "GBP",
-            dueDate: fileInv.dueDate || xeroInv.dueDate
-              ? new Date(fileInv.dueDate || xeroInv.dueDate).toLocaleDateString("en-GB")
+            fileAmount: p.fileAmountGBP != null ? p.fileAmountGBP : (Number(fileInv.amount) ?? ""),
+            xeroAmount: p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(xeroInv.amount) ?? ""),
+            currency: "GBP",
+            dueDate: (xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)
+              ? new Date((xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)).toLocaleDateString("en-GB")
               : "",
           });
         }
         for (const u of s.unpairedInvoices || []) {
+          const amtGBP = u.amountGBP != null ? u.amountGBP : (Number(u.amount) ?? "");
+          const dueOrDate = u.dueDate || u.date;
           rows.push({
             supplier,
             issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
             invoiceNumber: u.invoiceNumber || "",
-            fileAmount: u.fromXero ? "" : (Number(u.amount) ?? ""),
-            xeroAmount: u.fromXero ? (Number(u.amount) ?? "") : "",
-            currency: u.currency ?? "GBP",
-            dueDate: u.dueDate ? new Date(u.dueDate).toLocaleDateString("en-GB") : "",
+            fileAmount: u.fromXero ? "" : amtGBP,
+            xeroAmount: u.fromXero ? amtGBP : "",
+            currency: "GBP",
+            dueDate: dueOrDate ? new Date(dueOrDate).toLocaleDateString("en-GB") : "",
           });
         }
       }
@@ -405,23 +586,25 @@ export default function SimpleApp() {
         supplier,
         issue: "AMOUNT MISMATCH",
         invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
-        fileAmount: Number(fileInv.amount) ?? "",
-        xeroAmount: Number(xeroInv.amount) ?? "",
-        currency: fileInv.currency ?? xeroInv.currency ?? "GBP",
-        dueDate: fileInv.dueDate || xeroInv.dueDate
-          ? new Date(fileInv.dueDate || xeroInv.dueDate).toLocaleDateString("en-GB")
+        fileAmount: p.fileAmountGBP != null ? p.fileAmountGBP : (Number(fileInv.amount) ?? ""),
+        xeroAmount: p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(xeroInv.amount) ?? ""),
+        currency: "GBP",
+        dueDate: (xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)
+          ? new Date((xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)).toLocaleDateString("en-GB")
           : "",
       });
     }
     for (const u of row.unpairedInvoices || []) {
+      const amtGBP = u.amountGBP != null ? u.amountGBP : (Number(u.amount) ?? "");
+      const dueOrDate = u.dueDate || u.date;
       rows.push({
         supplier,
         issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
         invoiceNumber: u.invoiceNumber || "",
-        fileAmount: u.fromXero ? "" : (Number(u.amount) ?? ""),
-        xeroAmount: u.fromXero ? (Number(u.amount) ?? "") : "",
-        currency: u.currency ?? "GBP",
-        dueDate: u.dueDate ? new Date(u.dueDate).toLocaleDateString("en-GB") : "",
+        fileAmount: u.fromXero ? "" : amtGBP,
+        xeroAmount: u.fromXero ? amtGBP : "",
+        currency: "GBP",
+        dueDate: dueOrDate ? new Date(dueOrDate).toLocaleDateString("en-GB") : "",
       });
     }
     if (rows.length === 0) {
@@ -442,6 +625,106 @@ export default function SimpleApp() {
       ];
       const slug = String(supplier).replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 40);
       await exportToExcel(rows, headers, `tab2-issues-${slug}-${new Date().toISOString().slice(0, 10)}`);
+    } catch (err) {
+      console.error(err);
+      alert("Export failed");
+    } finally {
+      setExportingSupplierKey(null);
+    }
+  }, []);
+
+  const exportTab3ToExcel = useCallback(async () => {
+    const bySupplier = tab3Data?.bySupplier;
+    if (!Array.isArray(bySupplier) || bySupplier.length === 0) {
+      alert("No reconciled data to export");
+      return;
+    }
+    setExportTab3Loading(true);
+    try {
+      const rows = [];
+      for (const s of bySupplier) {
+        const supplier = s.supplier || "";
+        for (const p of s.pairs || []) {
+          const fileInv = p.fileInvoice || {};
+          const xeroInv = p.xeroInvoice || {};
+          const actualAmount = fileInv.amount != null ? Number(fileInv.amount) : "";
+          const currency = fileInv.currency ?? xeroInv.currency ?? "GBP";
+          const generatedAmountGBP = p.fileAmountGBP != null ? p.fileAmountGBP : (actualAmount !== "" && currency === "GBP" ? actualAmount : "");
+          rows.push({
+            supplier,
+            invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
+            actualAmount,
+            currency,
+            generatedAmountGBP,
+            generatedCurrency: "GBP",
+            dueDate: (fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)
+              ? new Date((fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)).toLocaleDateString("en-GB")
+              : "",
+          });
+        }
+      }
+      if (rows.length === 0) {
+        alert("No reconciled invoices to export");
+        return;
+      }
+      const headers = [
+        { label: "Supplier", key: "supplier" },
+        { label: "Invoice #", key: "invoiceNumber" },
+        { label: "Actual Amount", key: "actualAmount" },
+        { label: "Currency", key: "currency" },
+        { label: "Exchange Amount (£)", key: "generatedAmountGBP" },
+        { label: "Exchange Currency", key: "generatedCurrency" },
+        { label: "Due Date", key: "dueDate" },
+      ];
+      await exportToExcel(rows, headers, `tab3-reconciled-${new Date().toISOString().slice(0, 10)}`);
+    } catch (err) {
+      console.error(err);
+      alert("Export failed");
+    } finally {
+      setExportTab3Loading(false);
+    }
+  }, [tab3Data]);
+
+  const exportSingleSupplierTab3ToExcel = useCallback(async (row) => {
+    const supplier = row.supplier || row.contactId || "";
+    const pairs = row.pairs || [];
+    if (pairs.length === 0) {
+      alert("No reconciled invoices to export for this supplier");
+      return;
+    }
+    const rowKey = row.contactId ?? row.supplier;
+    setExportingSupplierKey(rowKey);
+    try {
+      const rows = [];
+      for (const p of pairs) {
+        const fileInv = p.fileInvoice || {};
+        const xeroInv = p.xeroInvoice || {};
+        const actualAmount = fileInv.amount != null ? Number(fileInv.amount) : "";
+        const currency = fileInv.currency ?? xeroInv.currency ?? "GBP";
+        const generatedAmountGBP = p.fileAmountGBP != null ? p.fileAmountGBP : (actualAmount !== "" && currency === "GBP" ? actualAmount : "");
+        rows.push({
+          supplier,
+          invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
+          actualAmount,
+          currency,
+          generatedAmountGBP,
+          generatedCurrency: "GBP",
+          dueDate: (fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)
+            ? new Date((fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)).toLocaleDateString("en-GB")
+            : "",
+        });
+      }
+      const headers = [
+        { label: "Supplier", key: "supplier" },
+        { label: "Invoice #", key: "invoiceNumber" },
+        { label: "Actual Amount", key: "actualAmount" },
+        { label: "Currency", key: "currency" },
+        { label: "Generated Amount (£)", key: "generatedAmountGBP" },
+        { label: "Exchange Currency", key: "generatedCurrency" },
+        { label: "Due Date", key: "dueDate" },
+      ];
+      const slug = String(supplier).replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 40);
+      await exportToExcel(rows, headers, `tab3-reconciled-${slug}-${new Date().toISOString().slice(0, 10)}`);
     } catch (err) {
       console.error(err);
       alert("Export failed");
@@ -471,6 +754,35 @@ export default function SimpleApp() {
     const files = e.target.files;
     if (files?.length > 0) handleFileUpload(files);
     e.target.value = "";
+  }
+
+  function handleDragEnter(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer?.types?.includes("Files")) setIsDragging(true);
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) setIsDragging(false);
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragging(false);
+    if (uploadLoading) return;
+    const files = e.dataTransfer?.files;
+    if (files?.length > 0) handleFileUpload(files);
   }
 
   async function handleFileUpload(files) {
@@ -509,6 +821,8 @@ export default function SimpleApp() {
           `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
         );
         refetchDashboardData();
+        refetchTab2();
+        refetchTab3();
       } else {
         const formData = new FormData();
         formData.append("file", fileArray[0]);
@@ -527,6 +841,8 @@ export default function SimpleApp() {
           `"${fileArray[0].name}" processed.${createdCount > 0 ? ` ${createdCount} invoice(s) saved.` : ""}`
         );
         refetchDashboardData();
+        refetchTab2();
+        refetchTab3();
       }
     } catch (err) {
       setUploadError(err.message || "Upload failed");
@@ -559,7 +875,13 @@ export default function SimpleApp() {
   ];
 
   return (
-    <div className={styles.root}>
+    <div
+      className={`${styles.root} ${isDragging ? styles.rootDragging : ""}`}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <input
         ref={fileInputRef}
         type="file"
@@ -575,10 +897,6 @@ export default function SimpleApp() {
         {lastUploadLoading ? (
           <>
             <section className={styles.batchSummary} aria-busy aria-label="Loading">
-              <div className={styles.batchHeader}>
-                <div className={styles.skeletonLine} style={{ width: 220, height: 14 }} />
-                <div className={styles.skeletonLine} style={{ width: 140, height: 12 }} />
-              </div>
               <div className={styles.cardsRow}>
                 <div className={styles.card}>
                   <div className={`${styles.skeletonBlock} ${styles.skeletonNumber}`} />
@@ -593,9 +911,15 @@ export default function SimpleApp() {
               </div>
             </section>
             <section className={styles.totalsBar}>
-              <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 160, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 72, height: 20, marginTop: 4, display: "inline-block" }} /></div>
-              <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 150, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 72, height: 20, marginTop: 4, display: "inline-block" }} /></div>
-              <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 100, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 56, height: 20, marginTop: 4, display: "inline-block" }} /></div>
+              <div className={styles.totalsBarHeader}>
+                <div className={styles.skeletonLine} style={{ width: 220, height: 14 }} />
+                <div className={styles.skeletonLine} style={{ width: 140, height: 12 }} />
+              </div>
+              <div className={styles.totalsRow}>
+                <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 160, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 72, height: 20, marginTop: 4, display: "inline-block" }} /></div>
+                <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 150, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 72, height: 20, marginTop: 4, display: "inline-block" }} /></div>
+                <div className={styles.totalsCell}><span className={styles.skeletonLine} style={{ width: 100, height: 12, display: "block" }} /><span className={styles.skeletonBlock} style={{ width: 56, height: 20, marginTop: 4, display: "inline-block" }} /></div>
+              </div>
             </section>
             <div className={styles.tabsContainer}>
               <nav className={styles.tabs} aria-hidden>
@@ -639,24 +963,7 @@ export default function SimpleApp() {
           </>
         ) : (
         <>
-        <section className={styles.batchSummary} aria-label="Latest upload summary">
-          <div className={styles.batchHeader}>
-            <div className={styles.latestLabel}>
-              <span className={styles.latestDot} aria-hidden />
-              Latest Upload —{" "}
-              {statementCount} statement{statementCount !== 1 ? "s" : ""} processed
-            </div>
-            <time
-              className={styles.dateTime}
-              dateTime={
-                dashboardData?.log?.createdAt
-                  ? new Date(dashboardData.log.createdAt).toISOString()
-                  : undefined
-              }
-            >
-              {lastUploadDateTime ?? "No uploads yet"}
-            </time>
-          </div>
+        <section className={styles.batchSummary} aria-label="Upload summary">
           {uploadLoading && (
             <p className={styles.uploadSuccess}>Processing…</p>
           )}
@@ -705,6 +1012,24 @@ export default function SimpleApp() {
         </section>
 
         <section className={styles.totalsBar} aria-label="Reconciliation totals">
+          <div className={styles.totalsBarHeader}>
+            <div className={styles.latestLabel}>
+              <span className={styles.latestDot} aria-hidden />
+              Latest Upload —{" "}
+              {statementCount} statement{statementCount !== 1 ? "s" : ""} processed
+            </div>
+            <time
+              className={styles.dateTime}
+              dateTime={
+                dashboardData?.log?.createdAt
+                  ? new Date(dashboardData.log.createdAt).toISOString()
+                  : undefined
+              }
+            >
+              {lastUploadDateTime ?? "No uploads yet"}
+            </time>
+          </div>
+          <div className={styles.totalsRow}>
           {totals.map(({ label, value, valueClass }) => (
             <div key={label} className={styles.totalsCell}>
               <span className={styles.totalsLabel}>{label}</span>
@@ -713,6 +1038,7 @@ export default function SimpleApp() {
               </span>
             </div>
           ))}
+          </div>
         </section>
 
         <div className={styles.tabsContainer}>
@@ -789,6 +1115,17 @@ export default function SimpleApp() {
               {exportTab2Loading ? "Exporting…" : "Export to Excel"}
             </button>
           )}
+          {activeTab === "reconciled" && (
+            <button
+              type="button"
+              className={styles.tab2ExportBtn}
+              onClick={exportTab3ToExcel}
+              disabled={exportTab3Loading || suppliersReconciled === 0}
+              aria-label="Export all reconciled to Excel"
+            >
+              {exportTab3Loading ? "Exporting…" : "Export to Excel"}
+            </button>
+          )}
         </div>
 
         <div
@@ -803,15 +1140,25 @@ export default function SimpleApp() {
               <table className={styles.supplierTable}>
                 <thead>
                   <tr>
-                    {[
-                      ["supplier", "SUPPLIER"],
-                      ["theySay", "THEY SAY WE OWE (£)"],
-                      ["xeroSays", "XERO SAYS WE OWE (£)"],
-                      ...(activeTab === "reconciled" ? [] : [["difference", "DIFFERENCE (£)"]]),
-                      ["unpaid", "UNPAID"],
-                      ["issues", "ISSUES"],
-                      ["status", "STATUS"],
-                    ].map(([key, label]) => (
+                    {(activeTab === "reconciled"
+                      ? [
+                          ["supplier", "SUPPLIER"],
+                          ["amountGBP", "AMOUNT (£)"],
+                          ["pairCount", "PAIRS"],
+                          ["pairsOverdue", "PAIRS OVERDUE"],
+                          ["issues", "ISSUES"],
+                          ["status", "STATUS"],
+                        ]
+                      : [
+                          ["supplier", "SUPPLIER"],
+                          ["theySay", "THEY SAY WE OWE (£)"],
+                          ["xeroSays", "XERO SAYS WE OWE (£)"],
+                          ["difference", "DIFFERENCE (£)"],
+                          ["unpaid", "UNPAID"],
+                          ["issues", "ISSUES"],
+                          ["status", "STATUS"],
+                        ]
+                    ).map(([key, label]) => (
                       <th
                         key={key}
                         className={`${styles.tableTh} ${styles.tableThSortable}`}
@@ -835,7 +1182,7 @@ export default function SimpleApp() {
                         )}
                       </th>
                     ))}
-                    {activeTab === "attention" && (
+                    {(activeTab === "attention" || activeTab === "reconciled") && (
                       <th key="export" className={styles.tableTh} style={{ width: 52 }}>
                         Export
                       </th>
@@ -868,20 +1215,21 @@ export default function SimpleApp() {
                     todayStart.setHours(0, 0, 0, 0);
                     const tab3OverdueCount =
                       activeTab === "reconciled"
-                        ? tab3Pairs.filter((p) => {
-                            const d = p.fileInvoice?.dueDate || p.xeroInvoice?.dueDate;
+                        ? (row.pairsOverdue ?? tab3Pairs.filter((p) => {
+                            const d = p.fileInvoice?.dueDate || p.fileInvoice?.date || p.xeroInvoice?.dueDate || p.xeroInvoice?.date;
                             if (!d) return false;
                             const due = new Date(d);
                             due.setHours(0, 0, 0, 0);
                             return due.getTime() < todayStart.getTime();
-                          }).length
+                          }).length)
                         : 0;
                     const reconciledDetailInvoices =
                       activeTab === "reconciled"
                         ? tab3Pairs.map((p) => {
-                            const fa = Number(p.fileInvoice?.amount) ?? 0;
-                            const xa = Number(p.xeroInvoice?.amount) ?? 0;
-                            const date = p.fileInvoice?.dueDate || p.xeroInvoice?.dueDate;
+                            const fa = p.fileAmountGBP != null ? p.fileAmountGBP : (Number(p.fileInvoice?.amount) ?? 0);
+                            const xa = p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(p.xeroInvoice?.amount) ?? 0);
+                            const diff = p.differenceGBP != null ? p.differenceGBP : 0;
+                            const date = p.fileInvoice?.dueDate || p.fileInvoice?.date || p.xeroInvoice?.dueDate || p.xeroInvoice?.date;
                             const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
                             return {
                               invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
@@ -889,7 +1237,7 @@ export default function SimpleApp() {
                               issue: "Matched",
                               supplierAmt: fa,
                               xeroAmt: xa,
-                              difference: 0,
+                              difference: diff,
                             };
                           })
                         : [];
@@ -897,22 +1245,22 @@ export default function SimpleApp() {
                       activeTab === "attention"
                         ? [
                             ...(tab2Pairs || []).map((p) => {
-                              const fa = Number(p.fileInvoice?.amount) ?? 0;
-                              const xa = Number(p.xeroInvoice?.amount) ?? 0;
-                              const date = p.fileInvoice?.dueDate || p.xeroInvoice?.dueDate;
+                              const fa = p.fileAmountGBP != null ? p.fileAmountGBP : (Number(p.fileInvoice?.amount) ?? 0);
+                              const xa = p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(p.xeroInvoice?.amount) ?? 0);
+                              const date = p.xeroInvoice?.dueDate || p.xeroInvoice?.date || p.fileInvoice?.dueDate || p.fileInvoice?.date;
                               const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
                               return {
                                 invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
                                 date: dateStr,
-                                issue: p.label === "amount mismatch" ? "AMOUNT MISMATCH" : "Matched",
+                                issue: "AMOUNT MISMATCH",
                                 supplierAmt: fa,
                                 xeroAmt: xa,
                                 difference: xa - fa,
                               };
                             }),
                             ...(tab2Unpaired || []).map((u) => {
-                              const amt = Number(u.amount) || 0;
-                              const dateStr = u.dueDate ? new Date(u.dueDate).toLocaleDateString("en-GB") : "–";
+                              const amt = u.amountGBP != null ? u.amountGBP : (Number(u.amount) || 0);
+                              const dateStr = (u.dueDate || u.date) ? new Date(u.dueDate || u.date).toLocaleDateString("en-GB") : "–";
                               return {
                                 invoiceNumber: u.invoiceNumber || "—",
                                 date: dateStr,
@@ -952,16 +1300,24 @@ export default function SimpleApp() {
                             <span className={`${styles.rowExpandIcon} ${isExpanded ? styles.rowExpandIconOpen : ""}`} aria-hidden>▶</span>
                             {row.supplier}
                           </td>
-                          <td className={styles.tableTd}>{formatTableAmount(row.theySay)}</td>
-                          <td className={styles.tableTd}>{formatTableAmount(row.xeroSays)}</td>
-                          {activeTab !== "reconciled" && (
-                            <td className={styles.tableTd}>
-                              <span className={diff < 0 ? styles.diffNegative : styles.diffPositive}>
-                                {diffFormatted}
-                              </span>
-                            </td>
+                          {activeTab === "reconciled" ? (
+                            <>
+                              <td className={styles.tableTd}>{formatTableAmount(row.amountGBP ?? row.theySay)}</td>
+                              <td className={styles.tableTd}>{row.pairCount ?? row.unpaid}</td>
+                              <td className={styles.tableTd}>{row.pairsOverdue ?? 0}</td>
+                            </>
+                          ) : (
+                            <>
+                              <td className={styles.tableTd}>{formatTableAmount(row.theySay)}</td>
+                              <td className={styles.tableTd}>{formatTableAmount(row.xeroSays)}</td>
+                              <td className={styles.tableTd}>
+                                <span className={diff < 0 ? styles.diffNegative : styles.diffPositive}>
+                                  {diffFormatted}
+                                </span>
+                              </td>
+                              <td className={styles.tableTd}>{row.unpaid}</td>
+                            </>
                           )}
-                          <td className={styles.tableTd}>{row.unpaid}</td>
                           <td className={styles.tableTd}>
                             <span className={styles.issuesBadge}>{row.issues}</span>
                           </td>
@@ -996,58 +1352,191 @@ export default function SimpleApp() {
                               </button>
                             </td>
                           )}
+                          {activeTab === "reconciled" && (
+                            <td className={styles.tableTd} onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                className={styles.exportRowBtn}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  exportSingleSupplierTab3ToExcel(row);
+                                }}
+                                disabled={exportingSupplierKey === rowKey || (row.pairCount ?? row.unpaid ?? 0) === 0}
+                                aria-label={`Export ${row.supplier} to Excel`}
+                                title="Export to Excel"
+                              >
+                                {exportingSupplierKey === rowKey ? (
+                                  <span className={styles.exportRowBtnSpinner} aria-hidden />
+                                ) : (
+                                  <svg className={styles.exportRowIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                    <polyline points="7 10 12 15 17 10" />
+                                    <line x1="12" y1="15" x2="12" y2="3" />
+                                  </svg>
+                                )}
+                              </button>
+                            </td>
+                          )}
                         </tr>
                         {isExpanded && (
                           <tr className={styles.tableRowDetail}>
-                            <td colSpan={activeTab === "reconciled" ? 6 : activeTab === "attention" ? 8 : 7} className={styles.tableTdDetail}>
+                            <td colSpan={activeTab === "reconciled" ? 7 : activeTab === "attention" ? 8 : 7} className={styles.tableTdDetail}>
                               {activeTab === "reconciled" ? (
-                                <div className={styles.reconciledCard}>
-                                  <div className={styles.reconciledCardLeft}>
-                                    <h3 className={styles.reconciledCardSupplier}>{row.supplier}</h3>
-                                    <p className={styles.reconciledCardSummary}>
-                                      Total owed: <strong>£{formatTableAmount(row.theySay)}</strong>
-                                      {" · "}
-                                      <strong>{row.unpaid} invoices</strong>
-                                      {tab3OverdueCount > 0 && (
-                                        <>
-                                          {" · "}
-                                          <span className={styles.reconciledCardOverdue}>
-                                            <strong>{tab3OverdueCount} overdue</strong>
-                                          </span>
-                                        </>
-                                      )}
-                                    </p>
+                                <div className={styles.reconciledExpanded}>
+                                  <div className={styles.reconciledCard}>
+                                    <div className={styles.reconciledCardLeft}>
+                                      <h3 className={styles.reconciledCardSupplier}>{row.supplier}</h3>
+                                      <p className={styles.reconciledCardSummary}>
+                                        Total owed (one per pair): <strong>£{formatTableAmount(row.amountGBP ?? row.theySay)}</strong>
+                                        {" · "}
+                                        <strong>{row.pairCount ?? row.unpaid} pairs</strong>
+                                        {tab3OverdueCount > 0 && (
+                                          <>
+                                            {" · "}
+                                            <span className={styles.reconciledCardOverdue}>
+                                              <strong>{tab3OverdueCount} overdue</strong>
+                                            </span>
+                                          </>
+                                        )}
+                                      </p>
+                                    </div>
+                                    <div className={styles.reconciledCardActions}>
+                                      <button
+                                        type="button"
+                                        className={styles.reconciledCardGenerateBtn}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setPaymentSuggestionNotifyRow(rowKey);
+                                          setTimeout(() => setPaymentSuggestionNotifyRow(null), 4000);
+                                        }}
+                                        aria-label="Generate payment suggestion"
+                                      >
+                                        Generate Payment Suggestion
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={styles.reconciledCardCloseBtn}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          closeExpanded(rowKey);
+                                        }}
+                                        aria-label="Close"
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                    {paymentSuggestionNotifyRow === rowKey && (
+                                      <p className={styles.reconciledCardNotify} role="status">
+                                        Generate Payment Suggestion is in development and will be available soon.
+                                      </p>
+                                    )}
                                   </div>
-                                  <div className={styles.reconciledCardActions}>
-                                    <button
-                                      type="button"
-                                      className={styles.reconciledCardGenerateBtn}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setPaymentSuggestionNotifyRow(rowKey);
-                                        setTimeout(() => setPaymentSuggestionNotifyRow(null), 4000);
-                                      }}
-                                      aria-label="Generate payment suggestion"
-                                    >
-                                      Generate Payment Suggestion
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className={styles.reconciledCardCloseBtn}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        closeExpanded(rowKey);
-                                      }}
-                                      aria-label="Close"
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-                                  {paymentSuggestionNotifyRow === rowKey && (
-                                    <p className={styles.reconciledCardNotify} role="status">
-                                      Generate Payment Suggestion is in development and will be available soon.
-                                    </p>
-                                  )}
+                                  {reconciledDetailInvoices.length > 0 && (() => {
+                                    const tab3RowHasSelection = reconciledDetailInvoices.some((_, j) =>
+                                      tab3SelectedIds.has(`${rowKey}-${j}`)
+                                    );
+                                    const selectedIndices = reconciledDetailInvoices
+                                      .map((_, j) => (tab3SelectedIds.has(`${rowKey}-${j}`) ? j : null))
+                                      .filter((j) => j !== null);
+                                    const actionsBar = (
+                                      <div className={styles.reconciledActionsBar}>
+                                        <span className={styles.reconciledActionsLabel}>Actions:</span>
+                                        <button
+                                          type="button"
+                                          className={styles.reconciledActionBtn}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            fireConfettiFromElement(e.currentTarget);
+                                            handleMarkPaid(row, selectedIndices, rowKey);
+                                          }}
+                                          aria-label="Mark selected as paid"
+                                        >
+                                          Paid
+                                        </button>
+                                      </div>
+                                    );
+                                    return (
+                                      <>
+                                        {tab3RowHasSelection && actionsBar}
+                                        <div className={styles.reconciledTableWrap}>
+                                          <div className={styles.detailTableWrap}>
+                                            <table className={styles.detailTable}>
+                                              <thead>
+                                                <tr>
+                                                  <th className={styles.detailTh} style={{ width: 44 }}>
+                                                    <label className={styles.reconciledCheckboxLabel}>
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={
+                                                          reconciledDetailInvoices.length > 0 &&
+                                                          reconciledDetailInvoices.every((_, j) =>
+                                                            tab3SelectedIds.has(`${rowKey}-${j}`)
+                                                          )
+                                                        }
+                                                        onChange={(e) => {
+                                                          e.stopPropagation();
+                                                          const ids = reconciledDetailInvoices.map((_, j) => `${rowKey}-${j}`);
+                                                          toggleTab3SelectAllForRow(rowKey, ids);
+                                                        }}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        aria-label="Select all invoices"
+                                                      />
+                                                    </label>
+                                                  </th>
+                                                  <th className={styles.detailTh}>INVOICE #</th>
+                                                  <th className={styles.detailTh}>DATE</th>
+                                                  <th className={styles.detailTh}>ISSUE</th>
+                                                  <th className={styles.detailTh}>AMOUNT (£)</th>
+                                                  <th className={styles.detailTh} style={{ width: 80 }} />
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {reconciledDetailInvoices.map((inv, j) => {
+                                                  const invId = `${rowKey}-${j}`;
+                                                  return (
+                                                    <tr key={inv.invoiceNumber ? `${inv.invoiceNumber}-${j}` : j}>
+                                                      <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
+                                                        <label className={styles.reconciledCheckboxLabel}>
+                                                          <input
+                                                            type="checkbox"
+                                                            checked={tab3SelectedIds.has(invId)}
+                                                            onChange={() => toggleTab3InvoiceSelection(invId)}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            aria-label={`Select invoice ${inv.invoiceNumber || j + 1}`}
+                                                          />
+                                                        </label>
+                                                      </td>
+                                                      <td className={styles.detailTd}>{inv.invoiceNumber}</td>
+                                                      <td className={styles.detailTd}>{inv.date || "–"}</td>
+                                                      <td className={styles.detailTd}>
+                                                        <span className={styles.issuePillMatched}>Matched</span>
+                                                      </td>
+                                                      <td className={styles.detailTd}>{inv.supplierAmt != null ? formatTableAmount(inv.supplierAmt) : inv.xeroAmt != null ? formatTableAmount(inv.xeroAmt) : "–"}</td>
+                                                      <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
+                                                        <button
+                                                          type="button"
+                                                          className={styles.reconciledActionBtnRow}
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            fireConfettiFromElement(e.currentTarget);
+                                                            handleMarkPaid(row, [j], rowKey);
+                                                          }}
+                                                          aria-label={`Mark invoice ${inv.invoiceNumber || j + 1} as paid`}
+                                                        >
+                                                          Paid
+                                                        </button>
+                                                      </td>
+                                                    </tr>
+                                                  );
+                                                })}
+                                              </tbody>
+                                            </table>
+                                          </div>
+                                        </div>
+                                        {tab3RowHasSelection && actionsBar}
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                               ) : (
                               <div className={styles.detailPanel}>
@@ -1058,7 +1547,7 @@ export default function SimpleApp() {
                                         ? "No unpaid invoices"
                                         : `${totalUnpaidCount} Unpaid invoices from supplier`
                                       : latestNoIssues
-                                        ? "No errors here"
+                                        ? "No issues here"
                                         : "Need you attention"}
                                   </h3>
                                   {activeTab === "latest" && (
@@ -1119,10 +1608,14 @@ export default function SimpleApp() {
                                           <td className={styles.detailTd}>
                                             {inv.issue === "Matched" ? (
                                               <span className={styles.issuePillMatched}>Matched</span>
+                                            ) : inv.issue === "AMOUNT MISMATCH" ? (
+                                              <span className={styles.issuePillMismatch}>{inv.issue}</span>
+                                            ) : inv.issue === "MISSING FROM XERO" ? (
+                                              <span className={styles.issuePillMissingFromXero}>{inv.issue}</span>
+                                            ) : inv.issue === "MISSING FROM FILE" ? (
+                                              <span className={styles.issuePillMissingFromFile}>{inv.issue}</span>
                                             ) : (
-                                              <span className={inv.issue === "AMOUNT MISMATCH" ? styles.issuePillMismatch : styles.issuePillMissing}>
-                                                {inv.issue}
-                                              </span>
+                                              <span className={styles.issuePillMissing}>{inv.issue}</span>
                                             )}
                                           </td>
                                           <td className={styles.detailTd}>
@@ -1187,6 +1680,19 @@ export default function SimpleApp() {
         )}
       </div>
 
+      {tab3PaidToast.visible && (
+        <div className={styles.paidToast} role="status" aria-live="polite">
+          <span className={styles.paidToastMessage}>{tab3PaidToast.message}</span>
+          <button
+            type="button"
+            className={styles.paidToastUndo}
+            onClick={handleUndoPaid}
+            aria-label="Undo mark as paid"
+          >
+            Undo
+          </button>
+        </div>
+      )}
     </div>
   );
 }

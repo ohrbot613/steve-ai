@@ -14,6 +14,7 @@
     "@copilotkit/react-core": "^1.51.2",
     "@copilotkit/react-ui": "^1.51.2",
     "@sentry/react": "^10.38.0",
+    "canvas-confetti": "^1.9.4",
     "cedar-os": "^0.1.23",
     "html2canvas": "^1.4.1",
     "react": "^19.2.0",

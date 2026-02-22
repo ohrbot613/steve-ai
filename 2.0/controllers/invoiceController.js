@@ -293,6 +293,12 @@ async function prepareOneFileUpload(file) {
     const selectedVendor = supplierMatchCountList[0]?.contactId ?? matchesAbove08?.[0]?.xeroId;
     if (!selectedVendor) throw new Error("No vendor match found.");
 
+    // When a supply matches, ensure vendor is marked as supplier if not already
+    await Vendor.updateOne(
+        { xeroId: selectedVendor, supplier: { $ne: true } },
+        { $set: { supplier: true, modifiedLast: new Date() } }
+    );
+
     const filesDir = path.join(__dirname, "..", "..", "..", "steve_files_do_not_delete");
     if (!fs.existsSync(filesDir)) {
         fs.mkdirSync(filesDir, { recursive: true });
@@ -405,7 +411,7 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
         return Math.round(best * 10 ** 6) / 10 ** 6;
     };
 
-    const MATCH_THRESHOLD = 0.2;
+    const MATCH_THRESHOLD = 0.8;
     const fileInvoices = invoices ?? [];
     const invoicesWithClosestMatches = fileInvoices.map((fileInv) => {
         const allScored = xeroInvoices.map((invoice) => {
@@ -619,6 +625,12 @@ exports.processOneStatementFile = async function processOneStatementFile(fileBuf
         if (!selectedVendor) {
             return { success: false, error: "No vendor match found." };
         }
+
+        // When a supply matches, ensure vendor is marked as supplier if not already
+        await Vendor.updateOne(
+            { xeroId: selectedVendor, supplier: { $ne: true } },
+            { $set: { supplier: true, modifiedLast: new Date() } }
+        );
 
         const dateOnFile = parseInvoiceDate(fileDate);
         const statement = await Statement.create({

@@ -9,6 +9,12 @@ $simple-border: #1A1D28;
   font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
 }
 
+.rootDragging {
+  outline: 3px dashed rgba(74, 222, 128, 0.6);
+  outline-offset: -3px;
+  background-color: rgba(16, 185, 129, 0.06);
+}
+
 .container {
   max-width: 1280px;
   margin: 0 auto;
@@ -257,20 +263,20 @@ $simple-border: #1A1D28;
   height: 36px;
   padding: 0;
   color: #9CA3AF;
-  background: none;
+  background-color: rgba(31, 41, 55, 0.5);
   border: 1px solid $simple-border;
   border-radius: 8px;
   cursor: pointer;
-  transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+  transition: color 0.2s, background-color 0.2s, border-color 0.2s;
 
   &:hover:not(:disabled) {
-    color: #4ADE80;
-    background-color: rgba(74, 222, 128, 0.1);
-    border-color: rgba(74, 222, 128, 0.3);
+    color: #D1D5DB;
+    background-color: rgba(55, 65, 81, 0.6);
+    border-color: #4B5563;
   }
 
   &:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: not-allowed;
   }
 }
@@ -294,6 +300,34 @@ $simple-border: #1A1D28;
 @keyframes exportSpinner {
   to {
     transform: rotate(360deg);
+  }
+}
+
+.tab2ExportBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #9CA3AF;
+  background-color: rgba(31, 41, 55, 0.8);
+  border: 1px solid $simple-border;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+
+  &:hover:not(:disabled) {
+    color: #E2E8F0;
+    background-color: rgba(55, 65, 81, 0.9);
+    border-color: #4B5563;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 }
 
@@ -428,6 +462,12 @@ $simple-border: #1A1D28;
   background-color: rgba(15, 18, 24, 0.8);
 }
 
+.reconciledExpanded {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
 .reconciledCard {
   display: flex;
   flex-direction: row;
@@ -436,6 +476,12 @@ $simple-border: #1A1D28;
   gap: 24px;
   padding: 20px 24px;
   flex-wrap: wrap;
+}
+
+.reconciledTableWrap {
+  padding: 0 24px 24px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .reconciledCardLeft {
@@ -522,6 +568,115 @@ $simple-border: #1A1D28;
   border: 1px solid rgba(59, 130, 246, 0.35);
   border-radius: 8px;
   line-height: 1.5;
+}
+
+.reconciledCheckboxLabel {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  margin: 0;
+
+  input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #4ADE80;
+  }
+}
+
+.reconciledActionsBar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px 24px;
+  flex-wrap: wrap;
+}
+
+.reconciledActionsLabel {
+  font-size: 14px;
+  font-weight: 600;
+  color: #9CA3AF;
+}
+
+.reconciledActionBtn {
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #E2E8F0;
+  background-color: #374151;
+  border: 1px solid #4B5563;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+
+  &:hover {
+    background-color: #4B5563;
+  }
+}
+
+.reconciledActionBtnRow {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #E2E8F0;
+  background-color: #374151;
+  border: 1px solid #4B5563;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+
+  &:hover {
+    background-color: #4B5563;
+  }
+}
+
+.paidToast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background-color: #1E293B;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
+  z-index: 1000;
+  animation: paidToastIn 0.25s ease-out;
+}
+
+@keyframes paidToastIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.paidToastMessage {
+  font-size: 14px;
+  color: #E2E8F0;
+}
+
+.paidToastUndo {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4ADE80;
+  background-color: transparent;
+  border: 1px solid #4ADE80;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+
+  &:hover {
+    background-color: rgba(74, 222, 128, 0.15);
+  }
 }
 
 .detailPanel {
@@ -661,6 +816,26 @@ $simple-border: #1A1D28;
   color: #FEF2F2;
 }
 
+.issuePillMissingFromXero {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  background-color: #991B1B;
+  color: #FECACA;
+}
+
+.issuePillMissingFromFile {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  background-color: #DC2626;
+  color: #FEE2E2;
+}
+
 .issuePillMismatch {
   display: inline-block;
   padding: 4px 10px;
@@ -761,11 +936,25 @@ $simple-border: #1A1D28;
 
 .totalsBar {
   display: flex;
+  flex-direction: column;
   margin-bottom: 28px;
   background-color: $simple-bg;
   border: 1px solid $simple-border;
   border-top: none;
   border-radius: 0 0 12px 12px;
+  padding: 0;
+}
+
+.totalsBarHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 28px;
+  border-bottom: 1px solid $simple-border;
+}
+
+.totalsRow {
+  display: flex;
   padding: 16px 28px;
 }
 
