@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-09)
 
 **Core value:** Users can have continuous, context-aware conversations with the AI agent that persist across sessions
-**Current focus:** Phase 4 - Stream AI Responses from Backend to Frontend
+**Current focus:** Phase 8 - Auto-reconcile new Xero invoices on 30-minute polling with fuzzy statement matching
 
 ## Current Position
 
-Phase: 4 (Stream AI Responses from Backend to Frontend)
-Plan: 1 of 2 in current phase
-Status: In progress
-Last activity: 2026-02-10 -- Completed 04-01-PLAN.md (Backend SSE streaming infrastructure)
+Phase: 8 (Auto-reconcile new Xero invoices on 30-minute polling with fuzzy statement matching)
+Plan: 1 of 1 in current phase (COMPLETE)
+Status: Complete
+Last activity: 2026-02-23 -- Completed 08-01-PLAN.md (Xero polling service with fuzzy reconciliation)
 
-Progress: [██████░░░░] 60%
+Progress: [████████░░] 80%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: 3m 43s
-- Total execution time: 0.25 hours
+- Total plans completed: 5
+- Average duration: 4m 2s
+- Total execution time: 0.34 hours
 
 **By Phase:**
 
@@ -30,10 +30,11 @@ Progress: [██████░░░░] 60%
 | 01-thread-storage-and-memory | 2/2 | 2m 57s | 1m 29s |
 | 04-stream-ai-responses-from-backend-to-frontend | 1/2 | 2m 21s | 2m 21s |
 | 05-fix-xero-bank-balance-mismatch-on-dashboard | 1/1 | 7m 54s | 7m 54s |
+| 08-auto-reconcile-new-xero-invoices-on-30-minute-polling-with-fuzzy-statement-matching | 1/1 | 3m | 3m |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (1m 25s), 01-02 (1m 32s), 04-01 (2m 21s), 05-01 (7m 54s)
-- Trend: Phase 04-01 was fastest (SSE streaming service, 2 tasks)
+- Last 5 plans: 01-01 (1m 25s), 01-02 (1m 32s), 04-01 (2m 21s), 05-01 (7m 54s), 08-01 (3m)
+- Trend: Consistent sub-8 minute execution across all plan types
 
 *Updated after each plan completion*
 
@@ -61,6 +62,11 @@ Recent decisions affecting current work:
 - [Phase 04-01]: Use better-sse library for SSE protocol (handles headers, keep-alive, connection lifecycle)
 - [Phase 04-01]: Buffer-then-save pattern: accumulate full response in memory, persist to MongoDB after stream completes
 - [Phase 04-01]: GET endpoint for streaming (EventSource API only supports GET, pass message/context as query params)
+- [Phase 08-01]: node-cron */30 * * * * with in-memory isPolling lock for overlap prevention
+- [Phase 08-01]: XeroSyncState and ReconLog on default mongoose connection (MONGO_URI), not 2.0 connection
+- [Phase 08-01]: getIdScore asymmetric — statement record first arg (has potentialInvoiceIds), Xero invoice number second
+- [Phase 08-01]: MATCH_THRESHOLD = 0.8, best match wins per Xero invoice, overwrites existing invoice number
+- [Phase 08-01]: Skip cycle silently (no ReconLog) when Xero not connected
 
 ### Pending Todos
 
@@ -80,7 +86,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-10
-Stopped at: Completed 04-01-PLAN.md (Backend SSE streaming infrastructure)
-Resume file: .planning/phases/04-stream-ai-responses-from-backend-to-frontend/04-01-SUMMARY.md
-Next: Continue with 04-02-PLAN.md (Frontend EventSource integration)
+Last session: 2026-02-23
+Stopped at: Completed 08-01-PLAN.md (Xero polling service with fuzzy reconciliation)
+Resume file: .planning/phases/08-auto-reconcile-new-xero-invoices-on-30-minute-polling-with-fuzzy-statement-matching/08-01-SUMMARY.md
+Next: No further plans in phase 08 — check ROADMAP.md for next phase
