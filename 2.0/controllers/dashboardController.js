@@ -5,6 +5,7 @@ const User = require("../../modals/userModal");
 const ProcessLog = require("../modals/processLogModal");
 const Statement = require("../modals/statementModal");
 const Vendor = require("../modals/vendorModal");
+const XeroSyncState = require("../../modals/xeroSyncStateModal");
 const { logProcess } = require("./processLogController");
 const mongoose = require("mongoose");
 
@@ -757,4 +758,16 @@ exports.undoMarkInvoicesPaid = tryCatchAsync(async (req, res) => {
         userId
     );
     res.status(200).json({ success: true, modifiedCount: result.modifiedCount });
+});
+
+/**
+ * GET /api/v2/dashboard/xero-sync-status
+ * Returns the last successful Xero sync timestamp for the "Last synced" indicator.
+ */
+exports.getXeroSyncStatus = tryCatchAsync(async (req, res) => {
+    const state = await XeroSyncState.findOne().select('lastSuccessAt').lean();
+    res.status(200).json({
+        success: true,
+        lastSyncedAt: state?.lastSuccessAt || null,
+    });
 });

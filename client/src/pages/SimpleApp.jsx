@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, Fragment } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from "react";
 import confetti from "canvas-confetti";
 import styles from "../scss/SimpleApp.module.scss";
 import { exportToExcel } from "../utils/exportUtils";
@@ -34,9 +34,22 @@ function formatTableAmount(amount) {
   }).format(amount);
 }
 
+function formatLastSynced(date) {
+  if (!date) return 'Never synced';
+  const diffMs = Date.now() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'Just now';
+  if (diffMin < 60) return `${diffMin} min ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  return `${diffDays}d ago`;
+}
+
 const DASHBOARD_DATA_URL = "/api/v2/dashboard/dashboard-data";
 const DASHBOARD_TAB2_URL = "/api/v2/dashboard/dashboard-tab-2";
 const DASHBOARD_TAB3_URL = "/api/v2/dashboard/dashboard-tab-3";
+const ALL_STATEMENTS_URL = "/api/v2/supplier-logs/all-statements";
 const TAB2_PAGE_SIZE = 50;
 
 const ALLOWED_TYPES = [
@@ -286,8 +299,17 @@ export default function SimpleApp() {
     latest: { column: null, dir: "asc" },
     attention: { column: null, dir: "asc" },
     reconciled: { column: null, dir: "asc" },
+    statements: { column: null, dir: "asc" },
   });
   const [detailTableSort, setDetailTableSort] = useState({ column: null, dir: "asc" });
+  const [statementsList, setStatementsList] = useState([]);
+  const [statementsLoading, setStatementsLoading] = useState(false);
+  const [statementsError, setStatementsError] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const statementsWithInvoices = useMemo(
+    () => statementsList.filter((log) => (log.total ?? 0) >= 1),
+    [statementsList]
+  );
 
   const handleSort = (column) => {
     setSortByTab((prev) => {
@@ -367,6 +389,38 @@ export default function SimpleApp() {
       : sortedTableData;
   useEffect(() => {
     if (activeTab === "attention") setTab2Page(1);
+  }, [activeTab]);
+
+  // Fetch recent statements when Statements tab is active
+  useEffect(() => {
+    if (activeTab !== "statements") return;
+    let cancelled = false;
+    setStatementsLoading(true);
+    setStatementsError("");
+    fetch(
+      `${ALL_STATEMENTS_URL}?page=1&sortBy=processDateTime&sortOrder=desc`,
+      { credentials: "include" }
+    )
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        if (data.success && Array.isArray(data.logs)) {
+          setStatementsList(data.logs);
+        } else {
+          setStatementsList([]);
+          setStatementsError("Failed to load statements");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStatementsList([]);
+          setStatementsError("Failed to load statements");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setStatementsLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [activeTab]);
 
   const [expandedRows, setExpandedRows] = useState(() => new Set());
@@ -519,6 +573,15 @@ export default function SimpleApp() {
     const openPicker = () => fileInputRef.current?.click();
     window.addEventListener("simple-app-open-upload", openPicker);
     return () => window.removeEventListener("simple-app-open-upload", openPicker);
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/v2/dashboard/xero-sync-status', { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => {
+        if (data?.lastSyncedAt) setLastSyncedAt(new Date(data.lastSyncedAt));
+      })
+      .catch(() => {}); // Silent on error — non-critical indicator
   }, []);
 
   useEffect(() => {
@@ -1125,13 +1188,22 @@ export default function SimpleApp() {
           </div>
         </section>
 
+        <div style={{
+          fontSize: '12px',
+          color: '#9CA3AF',
+          padding: '4px 0',
+          textAlign: 'right',
+        }}>
+          Last synced with Xero: {formatLastSynced(lastSyncedAt)}
+        </div>
+
         <div className={styles.tabsContainer}>
           <nav
             className={styles.tabs}
             role="tablist"
             aria-label="Batch views"
             onKeyDown={(e) => {
-              const tabs = ["latest", "attention", "reconciled"];
+              const tabs = ["latest", "attention", "reconciled", "statements"];
               const i = tabs.indexOf(activeTab);
               if (e.key === "ArrowRight" && i < tabs.length - 1) {
                 e.preventDefault();
@@ -1144,7 +1216,7 @@ export default function SimpleApp() {
                 setActiveTab("latest");
               } else if (e.key === "End") {
                 e.preventDefault();
-                setActiveTab("reconciled");
+                setActiveTab("statements");
               }
             }}
           >
@@ -1187,6 +1259,18 @@ export default function SimpleApp() {
               Reconciled
               <span className={styles.tabBadge}>{reconciledInvoiceCount} invoices</span>
             </button>
+            <button
+              type="button"
+              role="tab"
+              id="tab-statements"
+              aria-selected={activeTab === "statements"}
+              aria-controls="panel-statements"
+              tabIndex={activeTab === "statements" ? 0 : -1}
+              className={`${styles.tab} ${activeTab === "statements" ? styles.tabActive : ""}`}
+              onClick={() => setActiveTab("statements")}
+            >
+              Statements
+            </button>
           </nav>
           {activeTab === "attention" && (
             <button
@@ -1220,6 +1304,61 @@ export default function SimpleApp() {
           aria-labelledby={`tab-${activeTab}`}
           tabIndex={0}
         >
+          {activeTab === "statements" ? (
+            <section className={styles.tableSection} aria-label="Statements">
+              <h2 className={styles.statementsListTitle}>Recent statements</h2>
+              {statementsLoading && (
+                <p className={styles.statementsListMessage}>Loading…</p>
+              )}
+              {!statementsLoading && statementsError && (
+                <p className={styles.statementsListMessage}>{statementsError}</p>
+              )}
+              {!statementsLoading && !statementsError && statementsWithInvoices.length === 0 && (
+                <p className={styles.statementsListMessage}>No statements with invoices.</p>
+              )}
+              {!statementsLoading && !statementsError && statementsWithInvoices.length > 0 && (
+                <div className={styles.tableWrap}>
+                  <table className={styles.supplierTable}>
+                    <thead>
+                      <tr>
+                        <th className={styles.tableTh}>Supplier</th>
+                        <th className={styles.tableTh}>Processed</th>
+                        <th className={styles.tableTh}>Download</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {statementsWithInvoices.map((log) => (
+                        <tr key={log._id}>
+                          <td className={styles.tableTd}>
+                            {log.supplier?.name ?? "Unknown"}
+                          </td>
+                          <td className={styles.tableTd}>
+                            {formatLogDateTime(log.addedAt) ?? "—"}
+                          </td>
+                          <td className={styles.tableTd}>
+                            {(() => {
+                              const isPdf = /\.pdf$/i.test(String(log?.file ?? ""));
+                              return (
+                                <a
+                                  href={`/file/${log._id}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={styles.statementsDownloadLink}
+                                  {...(isPdf ? {} : { download: true })}
+                                >
+                                  {isPdf ? "View PDF" : "Download file"}
+                                </a>
+                              );
+                            })()}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          ) : (
           <section className={styles.tableSection} aria-label="Supplier table">
             <div className={styles.tableWrap}>
               <table className={styles.supplierTable}>
@@ -1816,6 +1955,7 @@ export default function SimpleApp() {
               </div>
             )}
           </section>
+          )}
         </div>
         </>
         )}
