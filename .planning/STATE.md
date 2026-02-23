@@ -72,6 +72,7 @@ None yet.
 - Phase 5 added: Fix Xero bank balance mismatch on dashboard
 - Phase 6 added: Fix Xero statement balance mismatch with dashboard values
 - Phase 7 added: Add supplier reconciliation dashboard with view toggle
+- Phase 8 added: Auto-reconcile new Xero invoices on 30-minute polling with fuzzy statement matching
 
 ### Blockers/Concerns
 
