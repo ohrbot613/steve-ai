@@ -32,7 +32,7 @@ export default function Dashboard() {
             });
             const data = await response.json();
             if (!response.ok) {
-                setError(data?.message || "Failed to load dashboard stats");
+                setError(data?.message || "We couldn't load the dashboard. Please refresh the page.");
                 return;
             }
             if (data.success && data != null) {
@@ -43,8 +43,8 @@ export default function Dashboard() {
                     overdueCount: data.overdueCount ?? 0,
                 });
             }
-        } catch (err) {
-            setError(err.message || "Failed to load dashboard stats");
+        } catch {
+            setError("We couldn't load the dashboard. Please check your connection and refresh.");
         } finally {
             setLoading(false);
         }
@@ -68,9 +68,7 @@ export default function Dashboard() {
             return !ALLOWED_TYPES.includes(f.type) && !ALLOWED_EXT.includes(ext);
         });
         if (invalid.length > 0) {
-            setUploadError(
-                `Please upload only PDF or Excel (.pdf, .xlsx, .xls). Invalid: ${invalid.map((f) => f.name).join(", ")}`
-            );
+            setUploadError("Please upload only PDF or Excel files.");
             return;
         }
         setUploadLoading(true);
@@ -90,7 +88,7 @@ export default function Dashboard() {
                 });
                 const data = await response.json();
                 if (!response.ok) {
-                    setUploadError(data.message || "Batch upload failed");
+                    setUploadError(data.message || "Upload didn't complete. Please try again.");
                     return;
                 }
                 (data.results || []).forEach((r) =>
@@ -121,12 +119,12 @@ export default function Dashboard() {
                 });
                 const data = await response.json();
                 if (!response.ok) {
-                    errors.push({ fileName: file.name, error: data.message || "Failed to parse file" });
+                    errors.push({ fileName: file.name, error: data.message || "We couldn't read that file. Please try again." });
                 } else if (data.success) {
                     const createdCount = data.createdCount ?? (data.created?.length ?? 0);
                     successes.push({ fileName: file.name, createdCount });
                 } else {
-                    errors.push({ fileName: file.name, error: data.message || "Failed to process file" });
+                    errors.push({ fileName: file.name, error: data.message || "We couldn't process that file. Please try again." });
                 }
                 if (successes.length > 0) {
                     const totalCreated = successes.reduce((s, x) => s + x.createdCount, 0);
@@ -139,8 +137,8 @@ export default function Dashboard() {
                     setUploadError(errors[0].error);
                 }
             }
-        } catch (err) {
-            setUploadError(err.message || "Upload failed");
+        } catch {
+            setUploadError("Upload didn't complete. Please check your connection and try again.");
         } finally {
             setUploadLoading(false);
         }
@@ -170,7 +168,7 @@ export default function Dashboard() {
             });
             const data = await response.json();
             if (!response.ok) {
-                setError(data?.message || "Failed to export unmatched invoices");
+                setError(data?.message || "We couldn't export. Please try again.");
                 return;
             }
             const invoices = data.invoices ?? [];
@@ -203,8 +201,8 @@ export default function Dashboard() {
             XLSX.utils.book_append_sheet(wb, ws, "Unmatched invoices");
             const filename = `unmatched-invoices-${new Date().toISOString().slice(0, 10)}.xlsx`;
             XLSX.writeFile(wb, filename);
-        } catch (err) {
-            setError(err?.message || "Export failed");
+        } catch {
+            setError("Export didn't complete. Please try again.");
         } finally {
             setExportUnmatchedLoading(false);
         }

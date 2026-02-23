@@ -3,6 +3,52 @@ const XLSX = require("xlsx");
 const { PDFParse } = require("pdf-parse");
 const axios = require("axios");
 
+const OPEN_ROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPEN_ROUTER_RETRY_MAX = 3;
+const OPEN_ROUTER_RETRY_BASE_MS = 2000;
+
+/**
+ * POST to OpenRouter with retry on 429/503. Uses exponential backoff; respects Retry-After if present.
+ */
+async function openRouterPost(requestBody, openRouterKey) {
+    let lastError;
+    for (let attempt = 0; attempt <= OPEN_ROUTER_RETRY_MAX; attempt++) {
+        try {
+            const response = await axios.post(OPEN_ROUTER_URL, requestBody, {
+                headers: {
+                    Authorization: `Bearer ${openRouterKey}`,
+                    "Content-Type": "application/json",
+                },
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+            });
+            return response;
+        } catch (err) {
+            lastError = err;
+            const status = err.response?.status;
+            const retryAfter = err.response?.headers?.["retry-after"];
+            if ((status === 429 || status === 503) && attempt < OPEN_ROUTER_RETRY_MAX) {
+                const waitMs = retryAfter
+                    ? Math.min(Number(retryAfter) * 1000, 60000)
+                    : OPEN_ROUTER_RETRY_BASE_MS * Math.pow(2, attempt);
+                console.warn("[parseFile] OpenRouter rate limit or server error, retrying", {
+                    status,
+                    attempt: attempt + 1,
+                    waitMs,
+                });
+                await new Promise((r) => setTimeout(r, waitMs));
+                continue;
+            }
+            const msg = status === 429
+                ? "Rate limit exceeded. Please try again in a few minutes."
+                : (err.message || "Request failed");
+            const e = new Error(msg);
+            e.statusCode = status;
+            throw e;
+        }
+    }
+}
+
 /**
  * Extract text from image-based PDF using OpenRouter AI vision (optional).
  * Only runs if OPEN_ROUTER env is set.
@@ -279,15 +325,22 @@ function normalizeTo3WithConfidence(candidateNames = [], aiList = []) {
     return result.slice(0, 3);
 }
 
+const PARSE_FILE_LOG = "[parseFile]";
+
 /**
  * Parse a single file buffer: PDF or Excel.
  * Returns { type: 'pdf'|'excel', data, raw } and for PDF also { text, images }.
  */
 async function parseFile(fileBuffer, fileName) {
+    const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    console.log(PARSE_FILE_LOG, "parseFile CALL", { fileName: fileName || "(unnamed)", fileSize, fileType: "pending" });
+
     const fileType = await fileTypeFromBuffer(fileBuffer);
     if (!fileType) {
+        console.log(PARSE_FILE_LOG, "parseFile OUTCOME", { success: false, error: "Unable to determine file type" });
         throw new Error("Unable to determine file type");
     }
+    console.log(PARSE_FILE_LOG, "parseFile DATA", { fileName: fileName || "(unnamed)", detectedType: fileType.ext, mime: fileType.mime });
 
     if (fileType.ext === "xlsx" || fileType.ext === "xls") {
         const workbook = XLSX.read(fileBuffer, { type: "buffer" });
@@ -305,11 +358,27 @@ async function parseFile(fileBuffer, fileName) {
             });
             allRecords.push(...records);
         });
-        return {
+        const rowCount = allRecords.length;
+        const sampleKeys = rowCount > 0 ? Object.keys(allRecords[0] || {}) : [];
+        const currencyLikeKeys = sampleKeys.filter((k) => /currency|curr|ccy|amount|total|£|€|\$/i.test(k));
+        console.log(PARSE_FILE_LOG, "parseFile DATA excel", {
+            sheetNames: workbook.SheetNames,
+            rowCount,
+            columnSample: sampleKeys.slice(0, 15),
+            currencyLikeColumns: currencyLikeKeys,
+        });
+        const result = {
             type: "excel",
             data: allRecords,
             raw: JSON.stringify(allRecords, null, 2),
         };
+        console.log(PARSE_FILE_LOG, "parseFile OUTCOME", {
+            success: true,
+            type: "excel",
+            rowCount,
+            rawLength: result.raw?.length ?? 0,
+        });
+        return result;
     }
 
     if (fileType.ext === "pdf") {
@@ -360,7 +429,7 @@ async function parseFile(fileBuffer, fileName) {
                 });
             }
 
-            return {
+            const result = {
                 type: "pdf",
                 data: finalText,
                 raw: finalText,
@@ -368,11 +437,24 @@ async function parseFile(fileBuffer, fileName) {
                 images,
                 logoCompanyNames,
             };
+            console.log(PARSE_FILE_LOG, "parseFile DATA pdf", {
+                textLength: finalText.length,
+                imageCount: images.length,
+                logoCompanyNames: logoCompanyNames.length ? logoCompanyNames : undefined,
+            });
+            console.log(PARSE_FILE_LOG, "parseFile OUTCOME", {
+                success: true,
+                type: "pdf",
+                textLength: finalText.length,
+                imageCount: images.length,
+            });
+            return result;
         } finally {
             if (parser.destroy) await parser.destroy();
         }
     }
 
+    console.log(PARSE_FILE_LOG, "parseFile OUTCOME", { success: false, error: `Unsupported file type: ${fileType.ext}` });
     throw new Error(`Unsupported file type: ${fileType.ext}. Only PDF and Excel are supported.`);
 }
 
@@ -382,12 +464,19 @@ async function parseFile(fileBuffer, fileName) {
  * Returns { companyNames } as [{ name, confidence }, ...]. Use parseFile separately when you need result for invoice extraction.
  */
 async function getCompaniesFromFile(fileBuffer, fileName) {
+    const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    console.log(PARSE_FILE_LOG, "getCompaniesFromFile CALL", { fileName: fileName || "(unnamed)", fileSize });
+
     const openRouterKey = process.env.OPEN_ROUTER;
     if (!openRouterKey) {
+        console.log(PARSE_FILE_LOG, "getCompaniesFromFile OUTCOME", { success: false, error: "OPEN_ROUTER not configured" });
         throw new Error("OPEN_ROUTER not configured; cannot get company names from file.");
     }
     const fileType = await fileTypeFromBuffer(fileBuffer);
-    if (!fileType) throw new Error("Unable to determine file type");
+    if (!fileType) {
+        console.log(PARSE_FILE_LOG, "getCompaniesFromFile OUTCOME", { success: false, error: "Unable to determine file type" });
+        throw new Error("Unable to determine file type");
+    }
 
     const prompt =
         "From this document (invoice, statement, or spreadsheet), identify the top 3 most likely company names (sender, recipient, vendor, client, business names). " +
@@ -433,14 +522,7 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
         };
     }
 
-    const response = await axios.post("https://openrouter.ai/api/v1/chat/completions", requestBody, {
-        headers: {
-            Authorization: `Bearer ${openRouterKey}`,
-            "Content-Type": "application/json",
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-    });
+    const response = await openRouterPost(requestBody, openRouterKey);
     const raw = response.data?.choices?.[0]?.message?.content?.trim() || "";
     if (!raw) {
         return { companyNames: [{ name: "", confidence: 0 }, { name: "", confidence: 0 }, { name: "", confidence: 0 }] };
@@ -477,6 +559,8 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
         name: entry.name,
         confidence: nextUniqueConfidence(entry.confidence),
     }));
+    console.log(PARSE_FILE_LOG, "getCompaniesFromFile DATA", { fileName: fileName || "(unnamed)", companyNames });
+    console.log(PARSE_FILE_LOG, "getCompaniesFromFile OUTCOME", { success: true, companyNames });
     return { companyNames };
 }
 
@@ -511,12 +595,20 @@ Rules:
  * PDF: send file to AI. Excel: parse to text and send. Returns { fileDate, invoices } compatible with existing flow.
  */
 async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
+    const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision CALL", { fileName: fileName || "(unnamed)", fileSize });
+
     const openRouterKey = process.env.OPEN_ROUTER;
     if (!openRouterKey) {
+        console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", { success: false, error: "OPEN_ROUTER not configured" });
         throw new Error("OPEN_ROUTER not configured; cannot extract invoices from file.");
     }
     const fileType = await fileTypeFromBuffer(fileBuffer);
-    if (!fileType) throw new Error("Unable to determine file type");
+    if (!fileType) {
+        console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", { success: false, error: "Unable to determine file type" });
+        throw new Error("Unable to determine file type");
+    }
+    console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision DATA", { fileName: fileName || "(unnamed)", detectedType: fileType.ext });
 
     let requestBody;
     if (fileType.ext === "xlsx" || fileType.ext === "xls") {
@@ -550,25 +642,28 @@ async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
         };
     }
 
-    const response = await axios.post("https://openrouter.ai/api/v1/chat/completions", requestBody, {
-        headers: {
-            Authorization: `Bearer ${openRouterKey}`,
-            "Content-Type": "application/json",
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-    });
+    const response = await openRouterPost(requestBody, openRouterKey);
     const raw = response.data?.choices?.[0]?.message?.content?.trim() || "";
+    console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision DATA rawResponse", {
+        fileName: fileName || "(unnamed)",
+        rawLength: raw?.length ?? 0,
+        rawPreview: raw ? raw.substring(0, 500) + (raw.length > 500 ? "..." : "") : "",
+    });
     if (!raw) {
+        console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", { success: false, fileDate: null, invoiceCount: 0, reason: "empty AI response" });
         return { fileDate: null, invoices: [] };
     }
     const cleaned = raw.replace(/^```\w*\n?|\n?```$/g, "").trim();
     const objMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!objMatch) return { fileDate: null, invoices: [] };
+    if (!objMatch) {
+        console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", { success: false, fileDate: null, invoiceCount: 0, reason: "no JSON object in response" });
+        return { fileDate: null, invoices: [] };
+    }
     let obj;
     try {
         obj = JSON.parse(objMatch[0]);
-    } catch {
+    } catch (e) {
+        console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", { success: false, fileDate: null, invoiceCount: 0, reason: "JSON parse error", error: e.message });
         return { fileDate: null, invoices: [] };
     }
     const fileDate = obj.fileDate ?? null;
@@ -589,6 +684,27 @@ async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
             activityDescription: typeof inv.activityDescription === "string" ? inv.activityDescription.trim() : (inv.activityDescription ?? null),
             paymentStatus: inv.paymentStatus === "paid" || inv.paymentStatus === "unpaid" ? inv.paymentStatus : "unpaid",
         };
+    });
+    const currenciesInFile = [...new Set(invoices.map((inv) => inv.currency).filter(Boolean))];
+    console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision DATA parsedInvoices", {
+        fileName: fileName || "(unnamed)",
+        fileDate,
+        invoiceCount: invoices.length,
+        currencyOfFile: currenciesInFile,
+        invoices: invoices.map((inv) => ({
+            invoiceNumber: inv.invoiceNumber,
+            amount: inv.amount,
+            currency: inv.currency,
+            dateDue: inv.dateDue,
+            invoiceDate: inv.invoiceDate,
+            paymentStatus: inv.paymentStatus,
+        })),
+    });
+    console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", {
+        success: true,
+        fileDate,
+        invoiceCount: invoices.length,
+        currencyOfFile: currenciesInFile,
     });
     return { fileDate, invoices };
 }

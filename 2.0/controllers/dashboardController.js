@@ -239,13 +239,8 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
         : [];
     const xeroByNumber = new Map(xeroInvoices.map((inv) => [inv.invoiceNumber, inv]));
 
-    // Tab 1: only show file invoices that either have no pair, or have a pair whose xero is unpaid. If pair is paid, drop both.
-    const fileInvoicesForTab1 = invoices.filter((inv) => {
-        const xeroInv = inv.invoiceNumber ? xeroByNumber.get(inv.invoiceNumber) : null;
-        if (!xeroInv) return true;
-        if (xeroInv.status === "paid") return false;
-        return true;
-    });
+    // Tab 1: include all file invoices from the statement (including paid). Paid ones are marked with issue "paid" and status "Paid" in supplierSummary.
+    const fileInvoicesForTab1 = invoices;
 
     const keptFileInvoiceNumbers = new Set(fileInvoicesForTab1.map((inv) => inv.invoiceNumber).filter(Boolean));
     const xeroInvoicesForTab1 = xeroInvoices.filter((inv) => keptFileInvoiceNumbers.has(inv.invoiceNumber));
@@ -270,12 +265,17 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
         }
     }
 
-    const invoicesAmountTotal = fileInvoicesForTab1
+    const isPaidForTotal = (inv) => inv.status === "paid" || (inv.invoiceNumber && xeroByNumber.get(inv.invoiceNumber)?.status === "paid");
+    const unpaidFileInvsForTotal = fileInvoicesForTab1.filter((inv) => !isPaidForTotal(inv));
+    const invoicesAmountTotal = unpaidFileInvsForTotal
         .reduce((sum, inv) => sum + toAmountGBP(inv, rates), 0)
         .toFixed(2);
-    const xeroInvoicesAmountTotal = xeroInvoicesForTab1
-        .reduce((sum, inv) => sum + toAmountGBP(inv, rates), 0)
-        .toFixed(2);
+    let xeroTotal = 0;
+    for (const inv of unpaidFileInvsForTotal) {
+        const xeroInv = inv.invoiceNumber ? xeroByNumber.get(inv.invoiceNumber) : null;
+        if (xeroInv) xeroTotal += toAmountGBP(xeroInv, rates);
+    }
+    const xeroInvoicesAmountTotal = Number(xeroTotal.toFixed(2)).toFixed(2);
 
     const pairsSameAmount = [];
     const pairsDiffAmount = [];
@@ -319,10 +319,14 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
 
     // All suppliers that were in the process (from all file invoices)
     const allProcessContactIds = [...new Set(invoices.map((inv) => inv.contactId).filter(Boolean))];
-    // Suppliers whose process invoices are entirely paid (all file invs were paired with paid xero, so nothing left)
-    const contactIdsFullyPaid = allProcessContactIds.filter(
-        (contactId) => fileInvoicesForTab1.filter((inv) => inv.contactId === contactId).length === 0
-    );
+    // Suppliers whose process invoices are all paid (file inv status paid or paired xero is paid)
+    const contactIdsFullyPaid = allProcessContactIds.filter((contactId) => {
+        const invs = fileInvoicesForTab1.filter((inv) => inv.contactId === contactId);
+        return invs.length > 0 && invs.every((inv) => {
+            const xeroInv = inv.invoiceNumber ? xeroByNumber.get(inv.invoiceNumber) : null;
+            return inv.status === "paid" || (xeroInv && xeroInv.status === "paid");
+        });
+    });
     const contactIdsReconciled = [
         ...new Set([...contactIdsInPairedFiltered, ...contactIdsFullyPaid]),
     ];
@@ -376,26 +380,31 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
 
     const supplierSummary = contactIds.map((contactId) => {
         const fileInvs = fileInvoicesForTab1.filter((inv) => inv.contactId === contactId);
-        const theySay = fileInvs.reduce((sum, inv) => sum + toAmountGBP(inv, rates), 0);
+        const isPaidInv = (inv) => inv.status === "paid" || (inv.invoiceNumber && xeroByNumber.get(inv.invoiceNumber)?.status === "paid");
+        const unpaidInvs = fileInvs.filter((inv) => !isPaidInv(inv));
+        const theySay = unpaidInvs.reduce((sum, inv) => sum + toAmountGBP(inv, rates), 0);
         let xeroSays = 0;
-        for (const inv of fileInvs) {
+        for (const inv of unpaidInvs) {
             const xeroInv = inv.invoiceNumber ? xeroByNumber.get(inv.invoiceNumber) : null;
             if (xeroInv) xeroSays += toAmountGBP(xeroInv, rates);
         }
-        const unpaid = fileInvs.filter((inv) => inv.status === "unpaid").length || fileInvs.length;
+        const unpaid = unpaidInvs.length;
+        const paidCount = fileInvs.filter((inv) => isPaidInv(inv)).length;
         const issues = fileInvs.filter((inv) =>
             !pairedFileIds.has(String(inv._id)) || pairsDiffAmountByFileId.has(String(inv._id))
         ).length;
         const status = issues === 0 ? "No action needed" : "Action Needed";
 
-        const invoicesNeedAttention = fileInvs
+        const unpaidNeedAttention = fileInvs
             .filter((inv) => inv.status === "unpaid")
             .filter((inv) => {
                 const hasPair = pairedFileIds.has(String(inv._id));
                 const hasMismatch = pairsDiffAmountByFileId.has(String(inv._id));
                 return !hasPair || hasMismatch;
-            })
-            .map((inv) => {
+            });
+        const paidInvoices = fileInvs.filter((inv) => isPaidInv(inv));
+        const invoicesNeedAttention = [
+            ...unpaidNeedAttention.map((inv) => {
                 const supplierAmt = Math.round(toAmountGBP(inv, rates) * 100) / 100;
                 const xeroInv = inv.invoiceNumber ? xeroByNumber.get(inv.invoiceNumber) : null;
                 const noPair = !xeroInv;
@@ -408,35 +417,58 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
                 return {
                     invoiceNumber: inv.invoiceNumber || "",
                     date,
+                    currency: inv.currency ?? "GBP",
+                    supplierOriginalAmount: inv.amount != null ? Number(inv.amount) : null,
                     issue,
                     supplierAmt,
                     xeroAmt,
                     difference,
+                    status: "Unpaid",
                 };
-            });
-
-        const invoicesViewAll = fileInvs
-            .filter((inv) => inv.status === "unpaid")
-            .map((inv) => {
+            }),
+            ...paidInvoices.map((inv) => {
                 const supplierAmt = Math.round(toAmountGBP(inv, rates) * 100) / 100;
                 const xeroInv = inv.invoiceNumber ? xeroByNumber.get(inv.invoiceNumber) : null;
-                const noPair = !xeroInv;
-                const xeroAmt = noPair ? null : Math.round(toAmountGBP(xeroInv, rates) * 100) / 100;
-                const difference = noPair ? supplierAmt : Math.round((xeroAmt - supplierAmt) * 100) / 100;
-                const hasMismatch = pairsDiffAmountByFileId.has(String(inv._id));
-                const issue = noPair ? "MISSING FROM XERO" : (hasMismatch ? "AMOUNT MISMATCH" : "Matched");
-                const date = inv.date
-                    ? new Date(inv.date).toISOString().slice(0, 10)
-                    : "";
+                const xeroAmt = xeroInv ? Math.round(toAmountGBP(xeroInv, rates) * 100) / 100 : null;
+                const date = inv.date ? new Date(inv.date).toISOString().slice(0, 10) : "";
                 return {
                     invoiceNumber: inv.invoiceNumber || "",
                     date,
-                    issue,
+                    currency: inv.currency ?? "GBP",
+                    supplierOriginalAmount: inv.amount != null ? Number(inv.amount) : null,
+                    issue: "paid",
                     supplierAmt,
                     xeroAmt,
-                    difference,
+                    difference: null,
+                    status: "Paid",
                 };
-            });
+            }),
+        ];
+
+        const invoicesViewAll = fileInvs.map((inv) => {
+            const isPaid = inv.status === "paid" || (inv.invoiceNumber && xeroByNumber.get(inv.invoiceNumber)?.status === "paid");
+            const supplierAmt = Math.round(toAmountGBP(inv, rates) * 100) / 100;
+            const xeroInv = inv.invoiceNumber ? xeroByNumber.get(inv.invoiceNumber) : null;
+            const noPair = !xeroInv;
+            const xeroAmt = noPair ? null : Math.round(toAmountGBP(xeroInv, rates) * 100) / 100;
+            const difference = noPair ? supplierAmt : Math.round((xeroAmt - supplierAmt) * 100) / 100;
+            const hasMismatch = pairsDiffAmountByFileId.has(String(inv._id));
+            const issue = isPaid ? "paid" : (noPair ? "MISSING FROM XERO" : (hasMismatch ? "AMOUNT MISMATCH" : "Matched"));
+            const date = inv.date
+                ? new Date(inv.date).toISOString().slice(0, 10)
+                : "";
+            return {
+                invoiceNumber: inv.invoiceNumber || "",
+                date,
+                currency: inv.currency ?? "GBP",
+                supplierOriginalAmount: inv.amount != null ? Number(inv.amount) : null,
+                issue,
+                supplierAmt,
+                xeroAmt,
+                difference,
+                status: isPaid ? "Paid" : "Unpaid",
+            };
+        });
 
         return {
             supplier: vendorNameByContactId.get(contactId) || contactId,
@@ -444,6 +476,7 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
             theySay: Math.round(theySay * 100) / 100,
             xeroSays: Math.round(xeroSays * 100) / 100,
             unpaid,
+            paidCount,
             issues,
             status,
             invoicesNeedAttention,
@@ -678,11 +711,11 @@ exports.getDashboardTab3 = tryCatchAsync(async (req, res) => {
 exports.markInvoicesPaid = tryCatchAsync(async (req, res) => {
     const { invoiceIds } = req.body;
     if (!Array.isArray(invoiceIds) || invoiceIds.length === 0) {
-        return res.status(400).json({ success: false, message: "invoiceIds array is required and must be non-empty." });
+        return res.status(400).json({ success: false, message: "Please select at least one invoice to mark as paid." });
     }
     const validIds = invoiceIds.filter((id) => id && mongoose.Types.ObjectId.isValid(id));
     if (validIds.length === 0) {
-        return res.status(400).json({ success: false, message: "No valid invoice ids provided." });
+        return res.status(400).json({ success: false, message: "We couldn't update those invoices. Please try again." });
     }
     const result = await Invoice.updateMany(
         { _id: { $in: validIds } },
@@ -706,11 +739,11 @@ exports.markInvoicesPaid = tryCatchAsync(async (req, res) => {
 exports.undoMarkInvoicesPaid = tryCatchAsync(async (req, res) => {
     const { invoiceIds } = req.body;
     if (!Array.isArray(invoiceIds) || invoiceIds.length === 0) {
-        return res.status(400).json({ success: false, message: "invoiceIds array is required and must be non-empty." });
+        return res.status(400).json({ success: false, message: "Please select at least one invoice to update." });
     }
     const validIds = invoiceIds.filter((id) => id && mongoose.Types.ObjectId.isValid(id));
     if (validIds.length === 0) {
-        return res.status(400).json({ success: false, message: "No valid invoice ids provided." });
+        return res.status(400).json({ success: false, message: "We couldn't update those invoices. Please try again." });
     }
     const result = await Invoice.updateMany(
         { _id: { $in: validIds } },

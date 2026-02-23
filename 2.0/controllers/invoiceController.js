@@ -9,11 +9,12 @@ const Vendor = require("../modals/vendorModal");
 const Statement = require("../modals/statementModal");
 const { logProcess } = require("./processLogController");
 
-/** Normalize currency to ISO 4217 3-letter code using currency-symbol-map. Returns null if unknown. */
+/** Normalize currency to ISO 4217 3-letter code using currency-symbol-map. Returns null if unknown. "$" defaults to USD. */
 function toISO4217Currency(input) {
     if (input == null || typeof input !== "string") return null;
     const s = input.trim();
     if (!s) return null;
+    if (s === "$" || s === "USD") return "USD";
     const upper = s.toUpperCase();
     if (s.length === 3 && currencyToSymbolMap[upper]) return upper;
     const symbolToCode = symbolToCodeMap || (symbolToCodeMap = buildSymbolToCodeMap());
@@ -34,6 +35,8 @@ const {
 } = require("../../formatting");
 const { namedToolChoiceToJSON } = require("@openrouter/sdk/models");
 const { tryCatchAsync } = require("../../controllers/ErrorController");
+
+const PARSE_FILE_LOG = "[parseFile]";
 
 /** Company name that must never appear in results (case-insensitive). */
 const EXCLUDED_COMPANY = "INSPERANTO";
@@ -155,7 +158,9 @@ async function getInvoicesFromFile(result, fileName) {
             potentialInvoiceIds.length > 0 ? potentialInvoiceIds : null
         );
         const parsed = parseInvoicesFromAIResponse(aiResponse);
-        console.log("[invoiceFileUpload] getInvoicesFromFile: done", { invoiceCount: parsed.invoices?.length ?? 0, fileDate: parsed.fileDate });
+        const currencies = [...new Set((parsed.invoices || []).map((inv) => inv.currency).filter(Boolean))];
+        console.log("[invoiceFileUpload] getInvoicesFromFile: done", { invoiceCount: parsed.invoices?.length ?? 0, fileDate: parsed.fileDate, currencyOfFile: currencies });
+        console.log(PARSE_FILE_LOG, "getInvoicesFromFile OUTCOME", { fileName: fn, success: true, fileDate: parsed.fileDate, invoiceCount: parsed.invoices?.length ?? 0, currencyOfFile: currencies, invoices: (parsed.invoices || []).map((inv) => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, currency: inv.currency })) });
         return { ...parsed, invoiceCountCheck };
     } catch (err) {
         console.error("[invoiceFileUpload] getInvoicesFromFile formatWithAIToStandardJSON:", err.message);
@@ -213,7 +218,9 @@ exports.handleMulterError = (err, req, res, next) => {
     if (err) {
         return res.status(400).json({
             success: false,
-            message: err.message || "File upload error",
+            message: err.code === "LIMIT_FILE_TYPE" || (err.message && err.message.includes("allowed"))
+                ? "Please upload only PDF or Excel files."
+                : "We couldn't accept that file. Please use a PDF or Excel file and try again.",
         });
     }
     next();
@@ -223,18 +230,31 @@ function validateUpload(req, res) {
     if (!req.file) {
         res.status(400).json({
             success: false,
-            message: "No file uploaded. Send a single file (field name: file).",
+            message: "Please choose a file to upload.",
         });
         return null;
     }
     return req.file;
 }
 
+/** Known friendly messages we set ourselves (safe to show to user). */
+const FRIENDLY_UPLOAD_MESSAGES = new Set([
+    "Could not determine the best vendor. Please select the best vendor from the list.",
+    "We couldn't identify a supplier in this file. Please check the file and try again.",
+    "We couldn't match this file to a supplier. Please add the supplier in Reconciliation first.",
+]);
+
 function sendParseError(err, res) {
     console.error("[invoiceFileUpload] Parse error:", err.message);
-    res.status(500).json({
+    const status = typeof err.statusCode === "number" && err.statusCode >= 400 && err.statusCode < 600
+        ? err.statusCode
+        : 500;
+    const message = err.message && FRIENDLY_UPLOAD_MESSAGES.has(err.message)
+        ? err.message
+        : "We couldn't read this file. Please check it's a valid PDF or Excel file and try again.";
+    res.status(status).json({
         success: false,
-        message: err.message || "Failed to parse file",
+        message,
     });
 }
 
@@ -244,6 +264,9 @@ function sendParseError(err, res) {
  */
 async function prepareOneFileUpload(file) {
     const fileName = getFileName(file);
+    const fileSize = file.buffer ? file.buffer.length : 0;
+    console.log(PARSE_FILE_LOG, "prepareOneFileUpload CALL", { fileName, fileSize });
+
     const { companyNames: rawCompanyNames } = await getCompaniesFromFile(file.buffer, fileName);
     let companyNames = rawCompanyNames.filter((entry) => !isExcludedName(entry.name));
     companyNames = companyNames.filter((entry) => (Number(entry.confidence) || 0) > SIMILARITY_THRESHOLD);
@@ -252,12 +275,20 @@ async function prepareOneFileUpload(file) {
 
     const first = companyNames[0];
     if (!first || !String(first.name || "").trim()) {
-        throw new Error("No company name identified. Could not find a confident match above 0.8.");
+        throw new Error("We couldn't identify a supplier in this file. Please check the file and try again.");
     }
 
     const { matchesAbove08 } = await selectBestVendor(first.name);
     const { fileDate, invoices: invoicesFromAIVision } = await getInvoicesFromFileWithAIVision(file.buffer, fileName);
     const invoices = invoicesFromAIVision ?? [];
+    const currencyOfFile = [...new Set(invoices.map((inv) => inv.currency).filter(Boolean))];
+    console.log(PARSE_FILE_LOG, "prepareOneFileUpload DATA after getInvoicesFromFileWithAIVision", {
+        fileName,
+        fileDate,
+        invoiceCount: invoices.length,
+        currencyOfFile,
+        invoices: invoices.map((inv) => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, currency: inv.currency, dateDue: inv.dateDue, invoiceDate: inv.invoiceDate })),
+    });
     const allowedContactIds = new Set(
         (matchesAbove08 || []).map((m) => m.xeroId).filter(Boolean)
     );
@@ -291,7 +322,7 @@ async function prepareOneFileUpload(file) {
     }
 
     const selectedVendor = supplierMatchCountList[0]?.contactId ?? matchesAbove08?.[0]?.xeroId;
-    if (!selectedVendor) throw new Error("No vendor match found.");
+    if (!selectedVendor) throw new Error("We couldn't match this file to a supplier. Please add the supplier in Reconciliation first.");
 
     // When a supply matches, ensure vendor is marked as supplier if not already
     await Vendor.updateOne(
@@ -315,11 +346,20 @@ async function prepareOneFileUpload(file) {
         dateOnFile,
     });
 
-    return {
+    const outcome = {
         vendorId: selectedVendor,
         invoices,
         statementId: statement._id,
     };
+    console.log(PARSE_FILE_LOG, "prepareOneFileUpload OUTCOME", {
+        fileName,
+        success: true,
+        vendorId: selectedVendor,
+        statementId: statement._id,
+        invoiceCount: invoices.length,
+        currencyOfFile,
+    });
+    return outcome;
 }
 
 /**
@@ -327,12 +367,14 @@ async function prepareOneFileUpload(file) {
  * Accepts a single file (PDF or Excel), parses it and returns parsed result.
  */
 exports.invoiceFileUpload = tryCatchAsync(async (req, res, next) => {
-    console.log("[invoiceFileUpload] start");
     const file = validateUpload(req, res);
     if (!file) {
         console.log("[invoiceFileUpload] validateUpload: no file");
         return;
     }
+    const fileName = getFileName(file);
+    console.log(PARSE_FILE_LOG, "invoiceFileUpload CALL", { fileName });
+    console.log("[invoiceFileUpload] start");
     try {
         const body = await prepareOneFileUpload(file);
         req.body.vendorId = body.vendorId;
@@ -342,6 +384,7 @@ exports.invoiceFileUpload = tryCatchAsync(async (req, res, next) => {
             if (err) sendParseError(err, res);
         });
     } catch (err) {
+        console.log(PARSE_FILE_LOG, "invoiceFileUpload OUTCOME", { fileName, success: false, error: err.message, statusCode: err.statusCode });
         console.error("[invoiceFileUpload] catch", err);
         if (err.statusCode === 409) {
             return res.status(409).json({
@@ -374,7 +417,7 @@ function parseInvoiceDate(value) {
 async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
     const { vendorId, invoices, statementId } = body;
     const vendor = await Vendor.findOne({ xeroId: vendorId, isDeleted: { $ne: true } });
-    if (!vendor) throw new Error("Vendor not found.");
+    if (!vendor) throw new Error("We couldn't match this file to a supplier. Please add the supplier in Reconciliation first.");
 
     // if (!vendor) {
     //     return res.status(404).json({
@@ -431,51 +474,71 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
         };
     });
 
-    // For each file invoice: delete any existing DB record with same invoice number(s); then create one new record (fromXero: false)
+    // For each file invoice: if existing invoice with same invoice number and fromXero false, update it; otherwise create new (fromXero: false).
+    // Match by exact invoice number or by idNoLetters so "INV-001" and "001" count as same; dedupe so we never leave multiple fromXero false with same number.
     const contactId = vendor.xeroId;
     const created = [];
     const statementIdsToCheck = new Set();
+    const idNoLettersForMatch = (s) => String(s ?? "").replace(/[a-zA-Z]/g, "").trim();
+    let existingFromFile = await Invoice.find({ contactId, fromXero: false, isDeleted: { $ne: true } }).lean();
 
     for (const fileInv of invoicesWithClosestMatches) {
         const numbersToFind = [
             fileInv.invoiceNumber,
             ...(Array.isArray(fileInv.potentialInvoiceIds) ? fileInv.potentialInvoiceIds : []),
         ].map((s) => String(s).trim()).filter(Boolean);
-        if (numbersToFind.length > 0) {
-            const toDelete = await Invoice.find({
-                contactId,
-                invoiceNumber: { $in: numbersToFind },
-                fromXero: false,
-            }).select("statementId").lean();
-            for (const inv of toDelete) {
-                if (inv.statementId) statementIdsToCheck.add(inv.statementId.toString());
-            }
-            await Invoice.deleteMany({
-                contactId,
-                invoiceNumber: { $in: numbersToFind },
-                fromXero: false,
-            });
-        }
-        const invoiceNumber = fileInv.match?.length > 0
+        const canonicalNumber = fileInv.match?.length > 0
             ? fileInv.match[0].invoice.invoiceNumber
             : (fileInv.invoiceNumber ?? "");
-        if (!invoiceNumber.trim()) continue;
+        if (!canonicalNumber.trim()) continue;
+
         const dateVal = parseInvoiceDate(fileInv.invoiceDate ?? fileInv.dateDue);
         const dueDateVal = parseInvoiceDate(fileInv.dateDue ?? fileInv.dueDate);
-        const newRecord = await Invoice.create({
-            invoiceNumber: invoiceNumber.trim(),
+        const updatePayload = {
+            invoiceNumber: canonicalNumber.trim(),
             amount: fileInv.amount != null ? Number(fileInv.amount) : null,
             status: fileInv.paymentStatus === "paid" ? "paid" : "unpaid",
             description: fileInv.activityDescription ?? null,
-            contactId,
             currency: toISO4217Currency(fileInv.currency),
             date: dateVal,
             dueDate: dueDateVal,
             fromXero: false,
             isDeleted: false,
             statementId: statementId || null,
+        };
+
+        const canonicalDigits = idNoLettersForMatch(canonicalNumber);
+        const matchingExisting = existingFromFile.filter((ex) => {
+            if (numbersToFind.includes(ex.invoiceNumber)) return true;
+            if (canonicalDigits && idNoLettersForMatch(ex.invoiceNumber) === canonicalDigits) return true;
+            return false;
         });
-        created.push(newRecord);
+
+        let record;
+        if (matchingExisting.length > 0) {
+            const toUpdate = matchingExisting[0];
+            const extras = matchingExisting.slice(1);
+            if (toUpdate.statementId) statementIdsToCheck.add(toUpdate.statementId.toString());
+            for (const inv of extras) {
+                if (inv.statementId) statementIdsToCheck.add(inv.statementId.toString());
+            }
+            if (extras.length > 0) {
+                await Invoice.deleteMany({ _id: { $in: extras.map((e) => e._id) } });
+                existingFromFile = existingFromFile.filter((ex) => !extras.some((e) => e._id.equals(ex._id)));
+            }
+            record = await Invoice.findByIdAndUpdate(
+                toUpdate._id,
+                { $set: updatePayload },
+                { new: true, runValidators: true }
+            );
+        } else {
+            record = await Invoice.create({
+                ...updatePayload,
+                contactId,
+            });
+            existingFromFile.push({ invoiceNumber: record.invoiceNumber, _id: record._id, statementId: record.statementId });
+        }
+        created.push(record);
     }
 
     const matchCount = invoicesWithClosestMatches.filter((inv) => inv.match?.length > 0).length;
@@ -505,7 +568,7 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
         }
     }
 
-    return {
+    const result = {
         success: true,
         vendorId,
         vendor: { name: vendor.name, xeroId: vendor.xeroId },
@@ -514,8 +577,19 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
         matchThreshold: MATCH_THRESHOLD,
         matchCount,
         createdCount: created.length,
-        created: created.map((inv) => ({ _id: inv._id, invoiceNumber: inv.invoiceNumber, amount: inv.amount, date: inv.date, dueDate: inv.dueDate })),
+        created: created.map((inv) => ({ _id: inv._id, invoiceNumber: inv.invoiceNumber, amount: inv.amount, date: inv.date, dueDate: inv.dueDate, currency: inv.currency })),
     };
+    console.log(PARSE_FILE_LOG, "completeInvoiceFileUploadLogic OUTCOME", {
+        statementId,
+        vendorId,
+        vendorName: vendor?.name,
+        invoiceCount: fileInvoices.length,
+        currencyOfFile: [...new Set(fileInvoices.map((inv) => inv.currency).filter(Boolean))],
+        matchCount: result.matchCount,
+        createdCount: result.createdCount,
+        created: result.created,
+    });
+    return result;
 }
 
 exports.completeInvoiceFileUpload = tryCatchAsync(async (req, res) => {
@@ -531,28 +605,34 @@ exports.completeInvoiceFileUpload = tryCatchAsync(async (req, res) => {
 exports.batchInvoiceFileUpload = tryCatchAsync(async (req, res) => {
     const files = req.files || [];
     if (files.length === 0) {
-        return res.status(400).json({ success: false, message: "No files uploaded." });
+        return res.status(400).json({ success: false, message: "Please add at least one file to upload." });
     }
+    console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload CALL", { fileCount: files.length, fileNames: files.map((f) => f.originalname || f.name) });
     const userId = req.user?._id;
     const allIds = [];
     const results = [];
     const errors = [];
     for (const file of files) {
+        const fileLabel = file.originalname || file.name;
+        console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE", { fileName: fileLabel, fileIndex: results.length + errors.length + 1, totalFiles: files.length });
         try {
             const body = await prepareOneFileUpload(file);
             const result = await completeInvoiceFileUploadLogic(body, userId, { skipProcessLog: true });
             allIds.push(`s-${body.statementId}`);
             result.created.forEach((inv) => allIds.push(`i-${inv._id}`));
-            results.push({
-                fileName: file.originalname || file.name,
+            const resultEntry = {
+                fileName: fileLabel,
                 success: true,
                 statementId: body.statementId,
                 createdCount: result.created.length,
-            });
+            };
+            results.push(resultEntry);
+            console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE OUTCOME", { fileName: fileLabel, success: true, statementId: body.statementId, createdCount: result.created.length, currencyOfFile: [...new Set((body.invoices || []).map((inv) => inv.currency).filter(Boolean))] });
         } catch (err) {
+            console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE OUTCOME", { fileName: fileLabel, success: false, error: err.message });
             errors.push({
-                fileName: file.originalname || file.name,
-                error: err.message || "Failed to process file",
+                fileName: fileLabel,
+                error: "We couldn't process this file. Please check the format and try again.",
             });
         }
     }
@@ -564,6 +644,13 @@ exports.batchInvoiceFileUpload = tryCatchAsync(async (req, res) => {
             console.error("[batchInvoiceFileUpload] process log failed:", logErr.message);
         }
     }
+    console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload OUTCOME", {
+        totalFiles: files.length,
+        processed: results.length,
+        failed: errors.length,
+        results: results.map((r) => ({ fileName: r.fileName, statementId: r.statementId, createdCount: r.createdCount })),
+        errors: errors.length ? errors.map((e) => ({ fileName: e.fileName, error: e.error })) : undefined,
+    });
     return res.status(200).json({
         success: results.length > 0,
         processed: results.length,
@@ -579,6 +666,8 @@ exports.batchInvoiceFileUpload = tryCatchAsync(async (req, res) => {
  */
 exports.processOneStatementFile = async function processOneStatementFile(fileBuffer, uniqueFileName, user) {
     const fileName = uniqueFileName;
+    const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    console.log(PARSE_FILE_LOG, "processOneStatementFile CALL", { fileName, fileSize });
     try {
         const { companyNames: rawCompanyNames } = await getCompaniesFromFile(fileBuffer, fileName);
         let companyNames = rawCompanyNames.filter((entry) => !isExcludedName(entry.name));
@@ -644,8 +733,20 @@ exports.processOneStatementFile = async function processOneStatementFile(fileBuf
             { vendorId: selectedVendor, invoices, statementId: statement._id },
             user?._id
         );
-        return { ...result, statementId: statement._id };
+        const outcome = { ...result, statementId: statement._id };
+        console.log(PARSE_FILE_LOG, "processOneStatementFile OUTCOME", {
+            fileName,
+            success: true,
+            statementId: statement._id,
+            vendorId: selectedVendor,
+            invoiceCount: invoices.length,
+            currencyOfFile: [...new Set(invoices.map((inv) => inv.currency).filter(Boolean))],
+            createdCount: result.createdCount,
+            matchCount: result.matchCount,
+        });
+        return outcome;
     } catch (err) {
+        console.log(PARSE_FILE_LOG, "processOneStatementFile OUTCOME", { fileName, success: false, error: err.message || String(err) });
         console.error("[processOneStatementFile]", err);
         return { success: false, error: err.message || String(err) };
     }

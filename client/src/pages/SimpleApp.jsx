@@ -50,17 +50,22 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
   if (tab === "latest") {
     const summary = dashboardData?.supplierSummary;
     if (Array.isArray(summary) && summary.length > 0) {
-      return summary.map((row) => ({
-        supplier: row.supplier,
-        contactId: row.contactId,
-        theySay: row.theySay,
-        xeroSays: row.xeroSays,
-        unpaid: row.unpaid ?? 0,
-        issues: row.issues ?? 0,
-        status: row.status ?? "Action Needed",
-        invoicesNeedAttention: Array.isArray(row.invoicesNeedAttention) ? row.invoicesNeedAttention : [],
-        invoicesViewAll: Array.isArray(row.invoicesViewAll) ? row.invoicesViewAll : [],
-      }));
+      return summary.map((row) => {
+        const rawStatus = row.status ?? "Action Needed";
+        const status = rawStatus === "No action needed" ? "Reconciled" : rawStatus;
+        return {
+          supplier: row.supplier,
+          contactId: row.contactId,
+          theySay: row.theySay,
+          xeroSays: row.xeroSays,
+          unpaid: row.unpaid ?? 0,
+          paidCount: row.paidCount ?? 0,
+          issues: row.issues ?? 0,
+          status,
+          invoicesNeedAttention: Array.isArray(row.invoicesNeedAttention) ? row.invoicesNeedAttention : [],
+          invoicesViewAll: Array.isArray(row.invoicesViewAll) ? row.invoicesViewAll : [],
+        };
+      });
     }
     return [];
   }
@@ -86,7 +91,7 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
           xeroSays,
           unpaid: (s.invoices || []).length,
           issues,
-          status: "Action Needed",
+          status: "Unpaid",
           pairs: pairsAmountMismatch,
           unpairedInvoices,
         };
@@ -139,6 +144,37 @@ function sortTableRows(rows, sortColumn, sortDir) {
     if (typeof va !== "number") va = Number(va) || 0;
     if (typeof vb !== "number") vb = Number(vb) || 0;
     return mult * (va - vb);
+  });
+}
+
+/** Sort detail table rows (invoice list in expanded row) by column. */
+function sortDetailRows(rows, sortColumn, sortDir) {
+  if (!rows || rows.length === 0 || !sortColumn) return rows;
+  const mult = sortDir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let va = a[sortColumn];
+    let vb = b[sortColumn];
+    if (sortColumn === "date") {
+      const da = va ? new Date(va).getTime() : 0;
+      const db = vb ? new Date(vb).getTime() : 0;
+      return mult * (da - db);
+    }
+    if (sortColumn === "invoiceNumber" || sortColumn === "issue" || sortColumn === "status") {
+      va = String(va ?? "").toLowerCase();
+      vb = String(vb ?? "").toLowerCase();
+      return mult * (va < vb ? -1 : va > vb ? 1 : 0);
+    }
+    if (sortColumn === "supplierAmt" || sortColumn === "xeroAmt" || sortColumn === "difference" || sortColumn === "supplierOriginalAmount") {
+      va = va == null || va === "" ? NaN : Number(va);
+      vb = vb == null || vb === "" ? NaN : Number(vb);
+      if (Number.isNaN(va) && Number.isNaN(vb)) return 0;
+      if (Number.isNaN(va)) return mult;
+      if (Number.isNaN(vb)) return -mult;
+      return mult * (va - vb);
+    }
+    va = String(va ?? "").toLowerCase();
+    vb = String(vb ?? "").toLowerCase();
+    return mult * (va < vb ? -1 : va > vb ? 1 : 0);
   });
 }
 
@@ -251,6 +287,7 @@ export default function SimpleApp() {
     attention: { column: null, dir: "asc" },
     reconciled: { column: null, dir: "asc" },
   });
+  const [detailTableSort, setDetailTableSort] = useState({ column: null, dir: "asc" });
 
   const handleSort = (column) => {
     setSortByTab((prev) => {
@@ -266,6 +303,13 @@ export default function SimpleApp() {
         [activeTab]: { column, dir: newDir },
       };
     });
+  };
+
+  const handleDetailSort = (column) => {
+    setDetailTableSort((prev) => ({
+      column,
+      dir: prev.column === column && prev.dir === "asc" ? "desc" : "asc",
+    }));
   };
 
   const tabSort = sortByTab[activeTab];
@@ -488,6 +532,7 @@ export default function SimpleApp() {
       ? formatLogDateTime(dashboardData.log.createdAt)
       : null;
   const statementCount = dashboardData?.statementCount ?? 0;
+  const lastBatchInvoiceCount = dashboardData?.invoicesLength ?? statementCount;
 
   const suppliersSayWeOwe = dashboardData?.invoicesAmountTotal != null
     ? Number(dashboardData.invoicesAmountTotal)
@@ -509,6 +554,15 @@ export default function SimpleApp() {
 
   const needsAttentionCount = attentionTableData.reduce(
     (sum, row) => sum + (row.issues ?? 0),
+    0
+  );
+  const attentionInvoiceCount = attentionTableData.reduce(
+    (sum, row) => sum + (row.pairs?.length ?? 0) * 2 + (row.unpairedInvoices?.length ?? 0),
+    0
+  );
+  const reconciledTableData = getTableDataForTab("reconciled", dashboardData, tab2Data, tab3Data);
+  const reconciledInvoiceCount = reconciledTableData.reduce(
+    (sum, row) => sum + (row.pairs?.length ?? 0) * 2,
     0
   );
 
@@ -586,7 +640,7 @@ export default function SimpleApp() {
         supplier,
         issue: "AMOUNT MISMATCH",
         invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
-        fileAmount: p.fileAmountGBP != null ? p.fileAmountGBP : (Number(fileInv.amount) ?? ""),
+      fileAmount: p.fileAmountGBP != null ? p.fileAmountGBP : (Number(fileInv.amount) ?? ""),
         xeroAmount: p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(xeroInv.amount) ?? ""),
         currency: "GBP",
         dueDate: (xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)
@@ -733,23 +787,6 @@ export default function SimpleApp() {
     }
   }, []);
 
-  const xeroInvoiceNumbers = new Set(
-    (dashboardData?.xeroInvoices || []).map((inv) => inv.invoiceNumber).filter(Boolean)
-  );
-  const hasMatchNotFound = (dashboardData?.invoices || []).some(
-    (inv) => inv.invoiceNumber && !xeroInvoiceNumbers.has(inv.invoiceNumber)
-  );
-  const hasAmountMismatch =
-    Array.isArray(dashboardData?.pairedInvoices) && dashboardData.pairedInvoices.length > 0;
-  const issuesSubtitle =
-    hasAmountMismatch && hasMatchNotFound
-      ? "Amount mismatch / Match not found"
-      : hasAmountMismatch
-        ? "Amount mismatch"
-        : hasMatchNotFound
-          ? "Match not found"
-          : null;
-
   function handleFileSelect(e) {
     const files = e.target.files;
     if (files?.length > 0) handleFileUpload(files);
@@ -785,6 +822,19 @@ export default function SimpleApp() {
     if (files?.length > 0) handleFileUpload(files);
   }
 
+  /** Show a short, non-technical reason when an upload fails. */
+  function getUploadErrorMessage(serverMessage, context = "upload") {
+    if (serverMessage && typeof serverMessage === "string" && serverMessage.trim()) {
+      const msg = serverMessage.trim();
+      if (msg.includes("supplier") || msg.includes("vendor") || msg.includes("Reconciliation")) return msg;
+      if (msg.includes("PDF") || msg.includes("Excel") || msg.includes("file")) return msg;
+      if (msg.includes("couldn't") || msg.includes("could not") || msg.includes("Please ")) return msg;
+    }
+    if (context === "batch") return "Some files couldn't be processed. Please check that each file is a valid PDF or Excel and try again.";
+    if (context === "network") return "The upload didn't complete. Please check your connection and try again.";
+    return "The upload failed. Please try again.";
+  }
+
   async function handleFileUpload(files) {
     if (!files?.length) return;
     const fileArray = Array.from(files);
@@ -794,7 +844,7 @@ export default function SimpleApp() {
     });
     if (invalid.length > 0) {
       setUploadError(
-        `Use PDF or Excel only (.pdf, .xlsx, .xls). Invalid: ${invalid.map((f) => f.name).join(", ")}`
+        "Upload failed. Only PDF and Excel files are allowed. One or more of your files weren't in a supported format."
       );
       return;
     }
@@ -812,14 +862,41 @@ export default function SimpleApp() {
         });
         const data = await response.json();
         if (!response.ok) {
-          setUploadError(data.message || "Batch upload failed");
+          setUploadError(getUploadErrorMessage(data?.message, "batch"));
           return;
         }
+        const errors = data.errors || [];
         const count = (data.results || []).length;
         const totalCreated = (data.results || []).reduce((s, r) => s + (r.createdCount ?? 0), 0);
-        setUploadSuccess(
-          `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
-        );
+        if (errors.length > 0) {
+          const allFailed = count === 0;
+          if (allFailed) {
+            setUploadError(
+              "Upload failed. We couldn't process any of the files. Please check that each file is a valid PDF or Excel and that we can identify the supplier."
+            );
+          } else {
+            setUploadSuccess(
+              `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
+            );
+            setUploadError(
+              `${errors.length} file(s) couldn't be processed. Please check that those files are valid and that we can identify the supplier.`
+            );
+          }
+        } else {
+          setUploadSuccess(
+            `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
+          );
+        }
+        if (totalCreated > 0) {
+          confetti({
+            particleCount: 80,
+            spread: 70,
+            origin: { y: 0.6 },
+            colors: ["#4ADE80", "#22C55E", "#7B8CDE", "#A5B4FC", "#FBBF24"],
+            decay: 0.9,
+            ticks: 100,
+          });
+        }
         refetchDashboardData();
         refetchTab2();
         refetchTab3();
@@ -833,19 +910,29 @@ export default function SimpleApp() {
         });
         const data = await response.json();
         if (!response.ok) {
-          setUploadError(data.message || "Upload failed");
+          setUploadError(getUploadErrorMessage(data?.message));
           return;
         }
         const createdCount = data.createdCount ?? (data.created?.length ?? 0);
         setUploadSuccess(
           `"${fileArray[0].name}" processed.${createdCount > 0 ? ` ${createdCount} invoice(s) saved.` : ""}`
         );
+        if (createdCount > 0) {
+          confetti({
+            particleCount: 80,
+            spread: 70,
+            origin: { y: 0.6 },
+            colors: ["#4ADE80", "#22C55E", "#7B8CDE", "#A5B4FC", "#FBBF24"],
+            decay: 0.9,
+            ticks: 100,
+          });
+        }
         refetchDashboardData();
         refetchTab2();
         refetchTab3();
       }
     } catch (err) {
-      setUploadError(err.message || "Upload failed");
+      setUploadError(getUploadErrorMessage(err?.message, "network"));
     } finally {
       setUploadLoading(false);
     }
@@ -980,12 +1067,12 @@ export default function SimpleApp() {
             <div className={styles.card}>
               <div
                 className={`${styles.cardNumber} ${styles.cardNumberGreen}`}
-                aria-label={`${suppliersReconciled} suppliers reconciled`}
+                aria-label={`${reconciledInvoiceCount} invoices reconciled`}
               >
-                {suppliersReconciled}
+                {reconciledInvoiceCount}
               </div>
               <h2 className={styles.cardTitle}>
-                supplier{suppliersReconciled !== 1 ? "s" : ""} reconciled
+                invoice{reconciledInvoiceCount !== 1 ? "s" : ""} reconciled
               </h2>
               <p className={styles.cardSub}>Ready for payment</p>
             </div>
@@ -997,16 +1084,13 @@ export default function SimpleApp() {
                     ? styles.cardNumberRed
                     : styles.cardNumberGreen
                 }`}
-                aria-label={`${suppliersWithIssues} suppliers have issues`}
+                aria-label={`${attentionInvoiceCount} invoices have issues`}
               >
-                {suppliersWithIssues}
+                {attentionInvoiceCount}
               </div>
               <h2 className={styles.cardTitle}>
-                supplier{suppliersWithIssues !== 1 ? "s" : ""} have issues
+                invoice{attentionInvoiceCount !== 1 ? "s" : ""} have issues
               </h2>
-              {issuesSubtitle && (
-                <p className={styles.cardSubMuted}>{issuesSubtitle}</p>
-              )}
             </div>
           </div>
         </section>
@@ -1075,7 +1159,7 @@ export default function SimpleApp() {
               onClick={() => setActiveTab("latest")}
             >
               Latest Batch
-              <span className={styles.tabBadge}>{statementCount}</span>
+              <span className={styles.tabBadge}>{lastBatchInvoiceCount} invoices</span>
             </button>
             <button
               type="button"
@@ -1087,8 +1171,8 @@ export default function SimpleApp() {
               className={`${styles.tab} ${activeTab === "attention" ? styles.tabActive : ""}`}
               onClick={() => setActiveTab("attention")}
             >
-              Need you attention
-              <span className={styles.tabBadge}>{needsAttentionCount}</span>
+              Needs Your Attention
+              <span className={styles.tabBadge}>{attentionInvoiceCount} invoices</span>
             </button>
             <button
               type="button"
@@ -1101,7 +1185,7 @@ export default function SimpleApp() {
               onClick={() => setActiveTab("reconciled")}
             >
               Reconciled
-              <span className={styles.tabBadge}>{suppliersReconciled}</span>
+              <span className={styles.tabBadge}>{reconciledInvoiceCount} invoices</span>
             </button>
           </nav>
           {activeTab === "attention" && (
@@ -1130,6 +1214,7 @@ export default function SimpleApp() {
 
         <div
           id={`panel-${activeTab}`}
+          key={activeTab}
           className={styles.tabPanel}
           role="tabpanel"
           aria-labelledby={`tab-${activeTab}`}
@@ -1146,7 +1231,6 @@ export default function SimpleApp() {
                           ["amountGBP", "AMOUNT (£)"],
                           ["pairCount", "PAIRS"],
                           ["pairsOverdue", "PAIRS OVERDUE"],
-                          ["issues", "ISSUES"],
                           ["status", "STATUS"],
                         ]
                       : [
@@ -1198,7 +1282,7 @@ export default function SimpleApp() {
                         ? styles.statusReconciled
                         : row.status === "No action needed"
                           ? styles.statusNoActionNeeded
-                          : row.status === "Action Needed"
+                          : row.status === "Action Needed" || row.status === "Unpaid"
                             ? styles.statusActionNeeded
                             : styles.statusAwaiting;
                     const rowKey = row.contactId ?? row.supplier;
@@ -1234,6 +1318,8 @@ export default function SimpleApp() {
                             return {
                               invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
                               date: dateStr,
+                              currency: p.fileInvoice?.currency ?? p.xeroInvoice?.currency ?? "GBP",
+                              supplierOriginalAmount: p.fileInvoice?.amount != null ? Number(p.fileInvoice.amount) : null,
                               issue: "Matched",
                               supplierAmt: fa,
                               xeroAmt: xa,
@@ -1252,22 +1338,29 @@ export default function SimpleApp() {
                               return {
                                 invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
                                 date: dateStr,
+                                currency: p.fileInvoice?.currency ?? p.xeroInvoice?.currency ?? "GBP",
+                                supplierOriginalAmount: p.fileInvoice?.amount != null ? Number(p.fileInvoice.amount) : null,
                                 issue: "AMOUNT MISMATCH",
                                 supplierAmt: fa,
                                 xeroAmt: xa,
                                 difference: xa - fa,
+                                status: "Unpaid",
                               };
                             }),
                             ...(tab2Unpaired || []).map((u) => {
                               const amt = u.amountGBP != null ? u.amountGBP : (Number(u.amount) || 0);
                               const dateStr = (u.dueDate || u.date) ? new Date(u.dueDate || u.date).toLocaleDateString("en-GB") : "–";
+                              const origAmt = u.amount != null ? Number(u.amount) : null;
                               return {
                                 invoiceNumber: u.invoiceNumber || "—",
                                 date: dateStr,
+                                currency: u.currency ?? "GBP",
+                                supplierOriginalAmount: origAmt,
                                 issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
                                 supplierAmt: u.fromXero ? null : amt,
                                 xeroAmt: u.fromXero ? amt : null,
                                 difference: amt,
+                                status: "Unpaid",
                               };
                             }),
                           ]
@@ -1277,9 +1370,22 @@ export default function SimpleApp() {
                         ? reconciledDetailInvoices
                         : activeTab === "attention"
                           ? attentionDetailInvoices
-                          : viewAllShownForRow.has(rowKey)
+                          : activeTab === "latest"
                             ? viewAllInvoices
-                            : detailInvoices;
+                            : viewAllShownForRow.has(rowKey)
+                              ? viewAllInvoices
+                              : detailInvoices;
+                    const sortedDetailRows = sortDetailRows(detailRows, detailTableSort.column, detailTableSort.dir);
+                    const detailColumns = [
+                      ["invoiceNumber", "INVOICE #"],
+                      ["date", "DATE"],
+                      ["supplierOriginalAmount", "SUPPLIER ORIGINAL CURRENCY"],
+                      ["issue", "ISSUE"],
+                      ["supplierAmt", "SUPPLIER AMT (£)"],
+                      ["xeroAmt", "XERO AMT (£)"],
+                      ["difference", "DIFFERENCE (£)"],
+                      ["status", "STATUS"],
+                    ];
                     const totalUnpaidCount =
                       activeTab === "attention"
                         ? (tab2Pairs.length * 2) + tab2Unpaired.length
@@ -1318,9 +1424,11 @@ export default function SimpleApp() {
                               <td className={styles.tableTd}>{row.unpaid}</td>
                             </>
                           )}
-                          <td className={styles.tableTd}>
-                            <span className={styles.issuesBadge}>{row.issues}</span>
-                          </td>
+                          {activeTab !== "reconciled" && (
+                            <td className={styles.tableTd}>
+                              <span className={styles.issuesBadge}>{row.issues}</span>
+                            </td>
+                          )}
                           <td className={styles.tableTd}>
                             <span className={`${styles.statusBadge} ${statusClass}`}>
                               <span className={styles.statusDot} aria-hidden />
@@ -1380,7 +1488,7 @@ export default function SimpleApp() {
                         </tr>
                         {isExpanded && (
                           <tr className={styles.tableRowDetail}>
-                            <td colSpan={activeTab === "reconciled" ? 7 : activeTab === "attention" ? 8 : 7} className={styles.tableTdDetail}>
+                            <td colSpan={activeTab === "reconciled" ? 6 : activeTab === "attention" ? 8 : 7} className={styles.tableTdDetail}>
                               {activeTab === "reconciled" ? (
                                 <div className={styles.reconciledExpanded}>
                                   <div className={styles.reconciledCard}>
@@ -1389,7 +1497,7 @@ export default function SimpleApp() {
                                       <p className={styles.reconciledCardSummary}>
                                         Total owed (one per pair): <strong>£{formatTableAmount(row.amountGBP ?? row.theySay)}</strong>
                                         {" · "}
-                                        <strong>{row.pairCount ?? row.unpaid} pairs</strong>
+                                        <strong>{row.pairCount ?? row.unpaid} invoices</strong>
                                         {tab3OverdueCount > 0 && (
                                           <>
                                             {" · "}
@@ -1485,7 +1593,6 @@ export default function SimpleApp() {
                                                   </th>
                                                   <th className={styles.detailTh}>INVOICE #</th>
                                                   <th className={styles.detailTh}>DATE</th>
-                                                  <th className={styles.detailTh}>ISSUE</th>
                                                   <th className={styles.detailTh}>AMOUNT (£)</th>
                                                   <th className={styles.detailTh} style={{ width: 80 }} />
                                                 </tr>
@@ -1508,9 +1615,6 @@ export default function SimpleApp() {
                                                       </td>
                                                       <td className={styles.detailTd}>{inv.invoiceNumber}</td>
                                                       <td className={styles.detailTd}>{inv.date || "–"}</td>
-                                                      <td className={styles.detailTd}>
-                                                        <span className={styles.issuePillMatched}>Matched</span>
-                                                      </td>
                                                       <td className={styles.detailTd}>{inv.supplierAmt != null ? formatTableAmount(inv.supplierAmt) : inv.xeroAmt != null ? formatTableAmount(inv.xeroAmt) : "–"}</td>
                                                       <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
                                                         <button
@@ -1542,15 +1646,29 @@ export default function SimpleApp() {
                               <div className={styles.detailPanel}>
                                 <div className={styles.detailHeader}>
                                   <h3 className={styles.detailTitle}>
-                                    {viewAllShownForRow.has(rowKey)
-                                      ? totalUnpaidCount === 0
-                                        ? "No unpaid invoices"
-                                        : `${totalUnpaidCount} Unpaid invoices from supplier`
-                                      : latestNoIssues
-                                        ? "No issues here"
-                                        : "Need you attention"}
+                                    {activeTab === "latest"
+                                      ? (() => {
+                                          const paid = row.paidCount ?? 0;
+                                          const unpaid = row.unpaid ?? 0;
+                                          if (paid === 0 && unpaid === 0) return "No invoices";
+                                          if (paid === 0) return `${unpaid} Unpaid invoice${unpaid !== 1 ? "s" : ""} from supplier`;
+                                          if (unpaid === 0) return `${paid} Paid invoice${paid !== 1 ? "s" : ""} from supplier`;
+                                          return `${paid} paid and ${unpaid} unpaid invoice${(paid + unpaid) !== 1 ? "s" : ""} from supplier`;
+                                        })()
+                                      : viewAllShownForRow.has(rowKey)
+                                        ? (() => {
+                                            const paid = row.paidCount ?? 0;
+                                            const unpaid = row.unpaid ?? 0;
+                                            if (paid === 0 && unpaid === 0) return "No invoices";
+                                            if (paid === 0) return `${unpaid} Unpaid invoices from supplier`;
+                                            if (unpaid === 0) return `${paid} Paid invoices from supplier`;
+                                            return `${paid} paid and ${unpaid} unpaid invoice${(paid + unpaid) !== 1 ? "s" : ""} from supplier`;
+                                          })()
+                                        : latestNoIssues
+                                          ? "No issues here"
+                                          : "Invoices need attention"}
                                   </h3>
-                                  {activeTab === "latest" && (
+                                  {activeTab === "attention" && (
                                     <button
                                       type="button"
                                       className={styles.detailViewAll}
@@ -1592,21 +1710,40 @@ export default function SimpleApp() {
                                   <table className={styles.detailTable}>
                                     <thead>
                                       <tr>
-                                        <th className={styles.detailTh}>INVOICE #</th>
-                                        <th className={styles.detailTh}>DATE</th>
-                                        <th className={styles.detailTh}>ISSUE</th>
-                                        <th className={styles.detailTh}>SUPPLIER AMT (£)</th>
-                                        <th className={styles.detailTh}>XERO AMT (£)</th>
-                                        <th className={styles.detailTh}>DIFFERENCE (£)</th>
+                                        {detailColumns.map(([key, label]) => (
+                                          <th
+                                            key={key}
+                                            className={`${styles.detailTh} ${styles.detailThSortable}`}
+                                            onClick={(e) => { e.stopPropagation(); handleDetailSort(key); }}
+                                            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleDetailSort(key); } }}
+                                            role="columnheader"
+                                            tabIndex={0}
+                                            aria-sort={detailTableSort.column === key ? (detailTableSort.dir === "asc" ? "ascending" : "descending") : undefined}
+                                          >
+                                            {label}
+                                            {detailTableSort.column === key && (
+                                              <span className={styles.detailSortIcon} aria-hidden>
+                                                {detailTableSort.dir === "asc" ? " ↑" : " ↓"}
+                                              </span>
+                                            )}
+                                          </th>
+                                        ))}
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {detailRows.map((inv, j) => (
-                                        <tr key={inv.invoiceNumber ? `${inv.invoiceNumber}-${j}` : j}>
+                                      {sortedDetailRows.map((inv, j) => {
+                                        const isPaid = inv.status === "Paid" || inv.issue === "paid";
+                                        return (
+                                        <tr key={inv.invoiceNumber ? `${inv.invoiceNumber}-${j}` : j} className={isPaid ? styles.detailRowPaid : undefined}>
                                           <td className={styles.detailTd}>{inv.invoiceNumber}</td>
                                           <td className={styles.detailTd}>{inv.date || "–"}</td>
                                           <td className={styles.detailTd}>
-                                            {inv.issue === "Matched" ? (
+                                            {(inv.currency ?? "–") + (inv.supplierOriginalAmount != null ? ` (${formatTableAmount(inv.supplierOriginalAmount)})` : "")}
+                                          </td>
+                                          <td className={styles.detailTd}>
+                                            {inv.issue === "paid" ? (
+                                              <span className={styles.issuePillPaid}>paid</span>
+                                            ) : inv.issue === "Matched" ? (
                                               <span className={styles.issuePillMatched}>Matched</span>
                                             ) : inv.issue === "AMOUNT MISMATCH" ? (
                                               <span className={styles.issuePillMismatch}>{inv.issue}</span>
@@ -1623,14 +1760,18 @@ export default function SimpleApp() {
                                           </td>
                                           <td className={styles.detailTd}>{inv.xeroAmt == null ? "–" : formatTableAmount(inv.xeroAmt)}</td>
                                           <td className={styles.detailTd}>
-                                            {inv.issue === "Matched" ? (
+                                            {isPaid ? (
+                                              <span className={styles.diffNeutral}>–</span>
+                                            ) : inv.issue === "Matched" ? (
                                               <span className={styles.diffNeutral}>0.00</span>
                                             ) : (
                                               <span className={styles.diffNegative}>{formatTableAmount(inv.difference)}</span>
                                             )}
                                           </td>
+                                          <td className={styles.detailTd}>{inv.status ?? "–"}</td>
                                         </tr>
-                                      ))}
+                                        );
+                                      })}
                                     </tbody>
                                   </table>
                                 </div>

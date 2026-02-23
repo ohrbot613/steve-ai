@@ -13,6 +13,147 @@ $simple-border: #1A1D28;
   outline: 3px dashed rgba(74, 222, 128, 0.6);
   outline-offset: -3px;
   background-color: rgba(16, 185, 129, 0.06);
+  transition: outline 0.2s ease, background-color 0.2s ease;
+}
+
+// --- Fun entrance & interaction animations ---
+@keyframes cardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes totalsEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tabPanelEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rowEnter {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes detailExpand {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes messagePop {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes numberPop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes badgePop {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes sortFlip {
+  from {
+    opacity: 0;
+    transform: rotate(-90deg) scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(0deg) scale(1);
+  }
+}
+
+@keyframes successGlow {
+  0%, 100% {
+    text-shadow: 0 0 0 transparent;
+  }
+  50% {
+    text-shadow: 0 0 12px rgba(74, 222, 128, 0.5);
+  }
+}
+
+@keyframes issuePillIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes detailRowSlide {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes containerFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .container {
@@ -20,18 +161,16 @@ $simple-border: #1A1D28;
   margin: 0 auto;
   padding: 32px 24px;
   background-color: $simple-bg;
+  animation: containerFade 0.5s ease-out;
 }
 
 // Ghost/skeleton loading
 @keyframes simpleAppShimmer {
-  0% {
-    opacity: 0.45;
+  0%, 100% {
+    opacity: 0.4;
   }
   50% {
-    opacity: 0.7;
-  }
-  100% {
-    opacity: 0.45;
+    opacity: 0.75;
   }
 }
 
@@ -111,6 +250,7 @@ $simple-border: #1A1D28;
   border-top: none;
   border-radius: 0 0 12px 12px;
   margin-bottom: 24px;
+  animation: tabPanelEnter 0.3s ease-out;
 }
 
 .tab {
@@ -127,9 +267,15 @@ $simple-border: #1A1D28;
   margin-bottom: -1px;
   cursor: pointer;
   font-family: inherit;
+  transition: color 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
 
   &:hover {
     color: #E2E8F0;
+    transform: translateY(-1px);
+  }
+
+  &:active {
+    transform: translateY(0);
   }
 
   &.tabActive {
@@ -150,6 +296,16 @@ $simple-border: #1A1D28;
   background-color: #1F2937;
   color: #9CA3AF;
   font-family: 'JetBrains Mono', monospace;
+  transition: transform 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+  animation: badgePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+
+  .tab:nth-child(1) & { animation-delay: 0.2s; }
+  .tab:nth-child(2) & { animation-delay: 0.25s; }
+  .tab:nth-child(3) & { animation-delay: 0.3s; }
+
+  .tab:hover & {
+    transform: scale(1.08);
+  }
 
   .tabActive & {
     background-color: rgba(123, 140, 222, 0.25);
@@ -163,6 +319,7 @@ $simple-border: #1A1D28;
   border-radius: 12px;
   padding: 24px 28px;
   margin-bottom: 6px;
+  animation: totalsEnter 0.4s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
 .batchHeader {
@@ -195,6 +352,7 @@ $simple-border: #1A1D28;
   color: #6B7280;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 600;
+  animation: containerFade 0.6s ease-out 0.2s backwards;
 }
 
 .cardsRow {
@@ -208,6 +366,10 @@ $simple-border: #1A1D28;
   border-radius: 10px;
   padding: 22px 24px;
   border: 1px solid $simple-border;
+  animation: cardEnter 0.4s ease-out backwards;
+
+  &:nth-child(1) { animation-delay: 0.06s; }
+  &:nth-child(2) { animation-delay: 0.12s; }
 }
 
 .cardNumber {
@@ -216,6 +378,10 @@ $simple-border: #1A1D28;
   font-weight: 800;
   line-height: 1;
   margin-bottom: 10px;
+  animation: cardEnter 0.35s ease-out 0.1s backwards;
+
+  .card:nth-child(1) & { animation-delay: 0.16s; }
+  .card:nth-child(2) & { animation-delay: 0.22s; }
 
   &.cardNumberGreen {
     color: #4ADE80;
@@ -267,12 +433,17 @@ $simple-border: #1A1D28;
   border: 1px solid $simple-border;
   border-radius: 8px;
   cursor: pointer;
-  transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+  transition: color 0.2s, background-color 0.2s, border-color 0.2s, transform 0.15s ease;
 
   &:hover:not(:disabled) {
     color: #D1D5DB;
     background-color: rgba(55, 65, 81, 0.6);
     border-color: #4B5563;
+    transform: scale(1.08);
+  }
+
+  &:active:not(:disabled) {
+    transform: scale(0.95);
   }
 
   &:disabled {
@@ -317,12 +488,17 @@ $simple-border: #1A1D28;
   border: 1px solid $simple-border;
   border-radius: 8px;
   cursor: pointer;
-  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s, transform 0.15s ease;
 
   &:hover:not(:disabled) {
     color: #E2E8F0;
     background-color: rgba(55, 65, 81, 0.9);
     border-color: #4B5563;
+    transform: translateY(-2px);
+  }
+
+  &:active:not(:disabled) {
+    transform: translateY(0) scale(0.98);
   }
 
   &:disabled {
@@ -362,9 +538,15 @@ $simple-border: #1A1D28;
   border-radius: 8px;
   cursor: pointer;
   font-family: inherit;
+  transition: background-color 0.2s ease, transform 0.1s ease;
 
   &:hover:not(:disabled) {
     background-color: #374151;
+    transform: translateY(-1px);
+  }
+
+  &:active:not(:disabled) {
+    transform: translateY(0) scale(0.98);
   }
 
   &:disabled {
@@ -399,6 +581,7 @@ $simple-border: #1A1D28;
   background-color: rgba(26, 29, 40, 0.6);
   border-bottom: 1px solid $simple-border;
   font-family: 'JetBrains Mono', monospace;
+  transition: color 0.2s ease, background-color 0.15s ease;
 
   &.tableThSortable {
     cursor: pointer;
@@ -406,6 +589,7 @@ $simple-border: #1A1D28;
 
     &:hover {
       color: #9CA3AF;
+      background-color: rgba(26, 29, 40, 0.8);
     }
   }
 }
@@ -413,6 +597,8 @@ $simple-border: #1A1D28;
 .sortIcon {
   margin-left: 4px;
   color: #A5B4FC;
+  display: inline-block;
+  animation: sortFlip 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .tableTd {
@@ -421,10 +607,21 @@ $simple-border: #1A1D28;
   color: #E2E8F0;
   font-weight: 600;
   font-family: 'JetBrains Mono', monospace;
+  transition: background-color 0.15s ease;
 }
 
 .supplierTable tbody tr:last-child .tableTd {
   border-bottom: none;
+}
+
+.supplierTable tbody tr {
+  animation: rowEnter 0.35s ease-out backwards;
+
+  @for $i from 0 through 15 {
+    &:nth-child(#{$i + 1}) {
+      animation-delay: #{$i * 0.02}s;
+    }
+  }
 }
 
 .supplierTable tbody tr:hover .tableTd {
@@ -448,7 +645,7 @@ $simple-border: #1A1D28;
   margin-right: 8px;
   font-size: 10px;
   color: #6B7280;
-  transition: transform 0.2s ease;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 
   &.rowExpandIconOpen {
     transform: rotate(90deg);
@@ -460,6 +657,11 @@ $simple-border: #1A1D28;
   vertical-align: top;
   border-bottom: 1px solid $simple-border;
   background-color: rgba(15, 18, 24, 0.8);
+  animation: detailExpand 0.28s ease-out;
+}
+
+.tableRowDetail {
+  animation: rowEnter 0.25s ease-out;
 }
 
 .reconciledExpanded {
@@ -531,9 +733,15 @@ $simple-border: #1A1D28;
   border-radius: 8px;
   cursor: pointer;
   font-family: inherit;
+  transition: background-color 0.2s ease, transform 0.1s ease;
 
   &:hover {
     background-color: #22C55E;
+    transform: translateY(-1px);
+  }
+
+  &:active {
+    transform: translateY(0) scale(0.98);
   }
 }
 
@@ -608,9 +816,14 @@ $simple-border: #1A1D28;
   border-radius: 8px;
   cursor: pointer;
   font-family: inherit;
+  transition: background-color 0.2s ease, transform 0.1s ease;
 
   &:hover {
     background-color: #4B5563;
+  }
+
+  &:active {
+    transform: scale(0.98);
   }
 }
 
@@ -644,17 +857,17 @@ $simple-border: #1A1D28;
   border-radius: 10px;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.35);
   z-index: 1000;
-  animation: paidToastIn 0.25s ease-out;
+  animation: paidToastIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 @keyframes paidToastIn {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translate(20px, 10px) scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate(0, 0) scale(1);
   }
 }
 
@@ -673,9 +886,15 @@ $simple-border: #1A1D28;
   border-radius: 6px;
   cursor: pointer;
   font-family: inherit;
+  transition: background-color 0.2s ease, transform 0.15s ease;
 
   &:hover {
     background-color: rgba(74, 222, 128, 0.15);
+    transform: scale(1.05);
+  }
+
+  &:active {
+    transform: scale(0.98);
   }
 }
 
@@ -762,10 +981,16 @@ $simple-border: #1A1D28;
   border: none;
   border-radius: 6px;
   cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease, transform 0.15s ease;
 
   &:hover {
     color: #E2E8F0;
     background-color: rgba(255, 255, 255, 0.08);
+    transform: scale(1.1);
+  }
+
+  &:active {
+    transform: scale(0.95);
   }
 }
 
@@ -794,6 +1019,21 @@ $simple-border: #1A1D28;
   font-family: 'JetBrains Mono', monospace;
 }
 
+.detailThSortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  &:hover {
+    color: #9CA3AF;
+    background-color: rgba(26, 29, 40, 0.95);
+  }
+}
+
+.detailSortIcon {
+  margin-left: 4px;
+  opacity: 0.9;
+}
+
 .detailTd {
   padding: 12px 14px;
   border-bottom: 1px solid $simple-border;
@@ -802,8 +1042,37 @@ $simple-border: #1A1D28;
   font-family: 'JetBrains Mono', monospace;
 }
 
+.detailTable tbody tr {
+  animation: detailRowSlide 0.3s ease-out backwards;
+
+  @for $i from 0 through 12 {
+    &:nth-child(#{$i + 1}) {
+      animation-delay: #{$i * 0.04}s;
+    }
+  }
+}
+
 .detailTable tbody tr:last-child .detailTd {
   border-bottom: none;
+}
+
+.detailRowPaid {
+  background-color: rgba(34, 197, 94, 0.12);
+  .detailTd {
+    color: #86EFAC;
+  }
+}
+
+.detailRowPaid .detailTd {
+  border-bottom-color: rgba(34, 197, 94, 0.2);
+}
+
+.issuePillMissing,
+.issuePillMissingFromXero,
+.issuePillMissingFromFile,
+.issuePillMismatch,
+.issuePillMatched {
+  animation: issuePillIn 0.28s cubic-bezier(0.34, 1.56, 0.64, 1) 0.08s backwards;
 }
 
 .issuePillMissing {
@@ -856,6 +1125,16 @@ $simple-border: #1A1D28;
   color: #4ADE80;
 }
 
+.issuePillPaid {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  background-color: rgba(34, 197, 94, 0.35);
+  color: #86EFAC;
+}
+
 .diffNegative {
   color: #F87171;
   font-weight: 700;
@@ -883,6 +1162,11 @@ $simple-border: #1A1D28;
   background-color: #78350f;
   color: #FEF3C7;
   font-family: 'JetBrains Mono', monospace;
+  transition: transform 0.2s ease;
+
+  .tableRowExpandable:hover & {
+    transform: scale(1.06);
+  }
 }
 
 .statusBadge {
@@ -893,6 +1177,11 @@ $simple-border: #1A1D28;
   font-size: 12px;
   font-weight: 600;
   border-radius: 999px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+
+  .tableRowExpandable:hover & {
+    transform: scale(1.03);
+  }
 
   &.statusContacted {
     background-color: rgba(34, 197, 94, 0.2);
@@ -943,6 +1232,7 @@ $simple-border: #1A1D28;
   border-top: none;
   border-radius: 0 0 12px 12px;
   padding: 0;
+  animation: totalsEnter 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.15s backwards;
 }
 
 .totalsBarHeader {
@@ -982,6 +1272,7 @@ $simple-border: #1A1D28;
   font-family: 'JetBrains Mono', monospace;
   font-size: 15px;
   font-weight: 800;
+  transition: color 0.2s ease;
 
   &.totalsValueDefault {
     color: #F1F5F9;
@@ -989,6 +1280,7 @@ $simple-border: #1A1D28;
 
   &.totalsValueSuccess {
     color: #4ADE80;
+    animation: successGlow 2.5s ease-in-out infinite;
   }
 
   &.totalsValueDanger {
@@ -1017,6 +1309,7 @@ $simple-border: #1A1D28;
   font-size: 13px;
   font-weight: 600;
   color: #F87171;
+  animation: messagePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .uploadSuccess {
@@ -1024,5 +1317,6 @@ $simple-border: #1A1D28;
   font-size: 13px;
   font-weight: 600;
   color: #4ADE80;
+  animation: messagePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
