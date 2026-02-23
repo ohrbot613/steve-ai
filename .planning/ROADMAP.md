@@ -118,6 +118,16 @@ Plans:
 - [ ] 07-01-PLAN.md -- Dashboard toggle infrastructure, Google Fonts, extract existing stats view
 - [ ] 07-02-PLAN.md -- ReconciliationDashboard component with tabs, supplier table, expandable rows, status system, and visual verification
 
+### Phase 8: Auto-reconcile new Xero invoices on 30-minute polling with fuzzy statement matching
+
+**Goal:** Every 30 minutes, the server automatically polls Xero for new invoices, saves them to MongoDB, and fuzzy-matches them against uploaded bank statement records using the existing matching logic -- updating matched statement records with the Xero invoice number and showing a "Last synced with Xero" indicator on the reconciliation dashboard
+**Depends on:** Phase 7
+**Plans:** 2 plans
+
+Plans:
+- [ ] 08-01-PLAN.md -- Backend polling service: XeroSyncState/ReconLog models, xeroPollingService with token refresh, Xero fetch, fuzzy matching, and server.js integration
+- [ ] 08-02-PLAN.md -- API endpoint for sync status and frontend "Last synced with Xero" indicator on reconciliation dashboard
+
 ---
 *Roadmap created: 2026-02-09*
-*Last updated: 2026-02-17*
+*Last updated: 2026-02-23*
