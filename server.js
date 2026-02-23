@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const cookieParser = require("cookie-parser");
 const appRoutes = require("./app");
 const { errorHandler } = require("./controllers/ErrorController");
+const xeroPollingService = require("./services/xeroPollingService");
 const app = express();
 app.set('trust proxy', 1);
 const path = require("path");
@@ -25,6 +26,7 @@ const path = require("path");
             socketTimeoutMS: 45000,
         });
         console.log("MongoDB connected successfully");
+        xeroPollingService.start();
     } catch (error) {
         console.error("MongoDB connection failed:", error.message);
         process.exit(1); // Exit process if database connection fails
