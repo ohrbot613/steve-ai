@@ -244,8 +244,20 @@ async function pollAndReconcile() {
 
     const { accessToken, tenantId } = tokenInfo;
 
-    const syncState = await XeroSyncState.findOne().lean();
+    let syncState = await XeroSyncState.findOne().lean();
     const lastPolledAt = syncState?.lastPolledAt || null;
+
+    // First run: set lastPolledAt to now so future cycles only get new invoices
+    if (!lastPolledAt) {
+        const now = new Date();
+        await XeroSyncState.findOneAndUpdate(
+            {},
+            { $set: { lastPolledAt: now, lastSuccessAt: now } },
+            { upsert: true }
+        );
+        console.log("[XeroPoller] First run — initialized sync timestamp, will fetch new invoices from next cycle");
+        return;
+    }
 
     const xeroInvoices = await fetchNewXeroInvoices(accessToken, tenantId, lastPolledAt);
 
