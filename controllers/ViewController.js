@@ -70,8 +70,9 @@ exports.file = tryCatchAsync(async (req, res) => {
 
     res.setHeader('Content-Type', contentType);
 
-    // Set Content-Disposition to attachment to force download instead of displaying inline
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeFilename)}"`);
+    // PDF: inline so modern browsers can display in a new tab; others: attachment to download
+    const disposition = ext === '.pdf' ? 'inline' : 'attachment';
+    res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(safeFilename)}"`);
 
     // Stream the file
     const fileStream = fs.createReadStream(filePath);

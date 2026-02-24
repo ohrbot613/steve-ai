@@ -411,15 +411,28 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
                 const noPair = !xeroInv;
                 const xeroAmt = noPair ? null : Math.round(toAmountGBP(xeroInv, rates) * 100) / 100;
                 const difference = noPair ? supplierAmt : Math.round((xeroAmt - supplierAmt) * 100) / 100;
+                const fileCur = normCurrency(inv.currency);
+                const xeroCur = xeroInv ? normCurrency(xeroInv.currency) : null;
+                const sameCurrency = xeroCur && fileCur === xeroCur;
+                const diffOrig = !noPair && sameCurrency && inv.amount != null && xeroInv?.amount != null
+                    ? Math.round((Number(xeroInv.amount) - Number(inv.amount)) * 100) / 100
+                    : null;
                 const issue = noPair ? "MISSING FROM XERO" : "AMOUNT MISMATCH";
                 const date = inv.date
                     ? new Date(inv.date).toISOString().slice(0, 10)
                     : "";
                 return {
+                    _id: inv._id,
                     invoiceNumber: inv.invoiceNumber || "",
                     date,
                     currency: inv.currency ?? "GBP",
+                    supplierAmountOriginal: inv.amount != null ? Number(inv.amount) : null,
+                    supplierCurrencyOriginal: inv.currency ?? "GBP",
+                    xeroAmountOriginal: xeroInv?.amount != null ? Number(xeroInv.amount) : null,
+                    xeroCurrencyOriginal: xeroInv?.currency ?? "GBP",
                     supplierOriginalAmount: inv.amount != null ? Number(inv.amount) : null,
+                    differenceOriginal: diffOrig,
+                    differenceOriginalCurrency: diffOrig != null ? (inv.currency ?? "GBP") : null,
                     issue,
                     supplierAmt,
                     xeroAmt,
@@ -433,10 +446,17 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
                 const xeroAmt = xeroInv ? Math.round(toAmountGBP(xeroInv, rates) * 100) / 100 : null;
                 const date = inv.date ? new Date(inv.date).toISOString().slice(0, 10) : "";
                 return {
+                    _id: inv._id,
                     invoiceNumber: inv.invoiceNumber || "",
                     date,
                     currency: inv.currency ?? "GBP",
+                    supplierAmountOriginal: inv.amount != null ? Number(inv.amount) : null,
+                    supplierCurrencyOriginal: inv.currency ?? "GBP",
+                    xeroAmountOriginal: xeroInv?.amount != null ? Number(xeroInv.amount) : null,
+                    xeroCurrencyOriginal: xeroInv?.currency ?? "GBP",
                     supplierOriginalAmount: inv.amount != null ? Number(inv.amount) : null,
+                    differenceOriginal: null,
+                    differenceOriginalCurrency: null,
                     issue: "paid",
                     supplierAmt,
                     xeroAmt,
@@ -453,16 +473,29 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
             const noPair = !xeroInv;
             const xeroAmt = noPair ? null : Math.round(toAmountGBP(xeroInv, rates) * 100) / 100;
             const difference = noPair ? supplierAmt : Math.round((xeroAmt - supplierAmt) * 100) / 100;
+            const fileCur = normCurrency(inv.currency);
+            const xeroCur = xeroInv ? normCurrency(xeroInv.currency) : null;
+            const sameCurrency = xeroCur && fileCur === xeroCur;
+            const diffOrig = !noPair && sameCurrency && inv.amount != null && xeroInv?.amount != null
+                ? Math.round((Number(xeroInv.amount) - Number(inv.amount)) * 100) / 100
+                : null;
             const hasMismatch = pairsDiffAmountByFileId.has(String(inv._id));
             const issue = isPaid ? "paid" : (noPair ? "MISSING FROM XERO" : (hasMismatch ? "AMOUNT MISMATCH" : "Matched"));
             const date = inv.date
                 ? new Date(inv.date).toISOString().slice(0, 10)
                 : "";
             return {
+                _id: inv._id,
                 invoiceNumber: inv.invoiceNumber || "",
                 date,
                 currency: inv.currency ?? "GBP",
+                supplierAmountOriginal: inv.amount != null ? Number(inv.amount) : null,
+                supplierCurrencyOriginal: inv.currency ?? "GBP",
+                xeroAmountOriginal: xeroInv?.amount != null ? Number(xeroInv.amount) : null,
+                xeroCurrencyOriginal: xeroInv?.currency ?? "GBP",
                 supplierOriginalAmount: inv.amount != null ? Number(inv.amount) : null,
+                differenceOriginal: diffOrig,
+                differenceOriginalCurrency: diffOrig != null ? (inv.currency ?? "GBP") : null,
                 issue,
                 supplierAmt,
                 xeroAmt,
@@ -584,6 +617,10 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
                             amount: inv.amount,
                             amountGBP,
                             currency: inv.currency ?? "GBP",
+                            supplierAmountOriginal: inv.fromXero === false ? (inv.amount != null ? Number(inv.amount) : null) : null,
+                            supplierCurrencyOriginal: inv.fromXero === false ? (inv.currency ?? "GBP") : null,
+                            xeroAmountOriginal: inv.fromXero === true ? (inv.amount != null ? Number(inv.amount) : null) : null,
+                            xeroCurrencyOriginal: inv.fromXero === true ? (inv.currency ?? "GBP") : null,
                             dueDate: inv.dueDate,
                             date: inv.date,
                             fromXero: inv.fromXero,
@@ -770,4 +807,23 @@ exports.getXeroSyncStatus = tryCatchAsync(async (req, res) => {
         success: true,
         lastSyncedAt: state?.lastSuccessAt || null,
     });
+});
+
+/**
+ * DELETE /api/v2/dashboard/invoices/:id
+ * Hard-delete a single invoice. Caller must send the file invoice _id for pairs (only file is deleted)
+ * or the invoice _id for unpaired (file or xero).
+ */
+exports.hardDeleteInvoice = tryCatchAsync(async (req, res) => {
+    const { id } = req.params;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: "Valid invoice id is required." });
+    }
+    const result = await Invoice.deleteOne({ _id: id });
+    if (result.deletedCount === 0) {
+        return res.status(404).json({ success: false, message: "Invoice not found." });
+    }
+    const userId = req.user?._id ?? null;
+    await logProcess(`Hard-deleted invoice ${id} (dashboard)`, [id], userId);
+    res.status(200).json({ success: true, message: "Invoice deleted." });
 });

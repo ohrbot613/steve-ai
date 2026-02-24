@@ -166,20 +166,23 @@ $simple-border: #1A1D28;
 
 // Ghost/skeleton loading
 @keyframes simpleAppShimmer {
-  0%, 100% {
-    opacity: 0.4;
+  0% {
+    opacity: 0.35;
   }
   50% {
-    opacity: 0.75;
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 0.35;
   }
 }
 
 @keyframes simpleAppShimmerBg {
   0% {
-    background-position: 200% 0;
+    background-position: 150% 0;
   }
   100% {
-    background-position: -200% 0;
+    background-position: -50% 0;
   }
 }
 
@@ -187,15 +190,15 @@ $simple-border: #1A1D28;
 .skeletonBlock {
   border-radius: 6px;
   background: linear-gradient(
-    90deg,
+    105deg,
     $simple-border 0%,
-    #2d3748 25%,
-    #374151 50%,
-    #2d3748 75%,
+    $simple-border 40%,
+    rgba(55, 65, 81, 0.9) 50%,
+    $simple-border 60%,
     $simple-border 100%
   );
   background-size: 200% 100%;
-  animation: simpleAppShimmerBg 1.6s ease-in-out infinite, simpleAppShimmer 2s ease-in-out infinite;
+  animation: simpleAppShimmerBg 1.4s ease-in-out infinite, simpleAppShimmer 1.8s ease-in-out infinite;
 }
 
 .skeletonNumber {
@@ -209,20 +212,54 @@ $simple-border: #1A1D28;
   height: 20px;
   border-radius: 999px;
   background: linear-gradient(
-    90deg,
+    105deg,
     $simple-border 0%,
-    #2d3748 25%,
-    #374151 50%,
-    #2d3748 75%,
+    $simple-border 40%,
+    rgba(55, 65, 81, 0.9) 50%,
+    $simple-border 60%,
     $simple-border 100%
   );
   background-size: 200% 100%;
-  animation: simpleAppShimmerBg 1.6s ease-in-out infinite, simpleAppShimmer 2s ease-in-out infinite;
+  animation: simpleAppShimmerBg 1.4s ease-in-out infinite, simpleAppShimmer 1.8s ease-in-out infinite;
 }
 
-.skeletonRow td {
-  padding: 14px 16px;
+.skeletonRow {
+  td {
+    padding: 14px 16px;
+    vertical-align: middle;
+  }
+
+  @for $i from 0 through 19 {
+    &:nth-child(#{$i + 1}) .skeletonLine,
+    &:nth-child(#{$i + 1}) .skeletonBlock {
+      animation-delay: #{$i * 0.04}s;
+    }
+  }
+}
+
+.loadingSpinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid $simple-border;
+  border-top-color: #7B8CDE;
+  border-radius: 50%;
+  animation: loadingSpin 0.7s linear infinite;
   vertical-align: middle;
+  margin-right: 10px;
+}
+
+@keyframes loadingSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loadingMessage {
+  display: inline-flex;
+  align-items: center;
+  color: #9CA3AF;
+  font-size: 14px;
 }
 
 .tabsContainer {
@@ -417,6 +454,45 @@ $simple-border: #1A1D28;
   overflow: hidden;
 }
 
+// Statements tab — section header
+.statementsListTitle {
+  font-size: 1.125rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #F1F5F9;
+  margin: 0;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid $simple-border;
+  background: rgba(26, 29, 40, 0.5);
+}
+
+.statementsListMessage {
+  color: #9CA3AF;
+  margin: 0;
+  padding: 16px 0;
+}
+
+.statementsLoadingWrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 0;
+  margin-left: 16px;
+  color: #9CA3AF;
+  font-size: 14px;
+}
+
+
+.statementsDownloadLink {
+  color: #60A5FA;
+  text-decoration: none;
+  font-weight: 600;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
 .tableWrap {
   overflow-x: auto;
 }
@@ -471,6 +547,43 @@ $simple-border: #1A1D28;
 @keyframes exportSpinner {
   to {
     transform: rotate(360deg);
+  }
+}
+
+.tab1HideToggle,
+.tab1HideToggleActive {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+  border: 1px solid $simple-border;
+}
+
+.tab1HideToggle {
+  color: #9CA3AF;
+  background-color: rgba(31, 41, 55, 0.8);
+
+  &:hover {
+    color: #E2E8F0;
+    background-color: rgba(55, 65, 81, 0.9);
+    border-color: #4B5563;
+  }
+}
+
+.tab1HideToggleActive {
+  color: #86EFAC;
+  background-color: rgba(34, 197, 94, 0.15);
+  border-color: rgba(34, 197, 94, 0.4);
+
+  &:hover {
+    background-color: rgba(34, 197, 94, 0.22);
+    border-color: rgba(34, 197, 94, 0.5);
   }
 }
 
@@ -557,17 +670,28 @@ $simple-border: #1A1D28;
 
 .supplierTable {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 13px;
 
   th:first-child,
   td:first-child {
-    max-width: 200px;
-    width: 1%;
+    max-width: 280px;
+    min-width: 160px;
+    width: 18%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
+}
+
+.tableTdSupplier {
+  font-family: inherit;
+}
+
+.supplierName {
+  font-weight: 600;
+  color: #F1F5F9;
 }
 
 .tableTh {
@@ -654,6 +778,7 @@ $simple-border: #1A1D28;
 
 .tableRowDetail .tableTdDetail {
   padding: 0;
+  width: 100%;
   vertical-align: top;
   border-bottom: 1px solid $simple-border;
   background-color: rgba(15, 18, 24, 0.8);
@@ -959,13 +1084,22 @@ $simple-border: #1A1D28;
   padding: 8px 18px;
   font-size: 13px;
   font-weight: 600;
-  color: #6B7280;
-  background-color: #374151;
+  color: #E2E8F0;
+  background-color: #4B5563;
   border: none;
   border-radius: 999px;
-  cursor: not-allowed;
+  cursor: pointer;
   font-family: inherit;
-  opacity: 0.7;
+  transition: background-color 0.2s ease, color 0.2s ease;
+
+  &:hover {
+    background-color: #6B7280;
+    color: #fff;
+  }
+
+  &:active {
+    background-color: #374151;
+  }
 }
 
 .detailCloseBtn {
@@ -1042,6 +1176,25 @@ $simple-border: #1A1D28;
   font-family: 'JetBrains Mono', monospace;
 }
 
+.supplierOrigAmtCell {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 12px;
+  align-items: baseline;
+}
+
+.supplierOrigAmtCurrency {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94A3B8;
+  text-transform: uppercase;
+}
+
+.supplierOrigAmtAmount {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+}
+
 .detailTable tbody tr {
   animation: detailRowSlide 0.3s ease-out backwards;
 
@@ -1054,6 +1207,50 @@ $simple-border: #1A1D28;
 
 .detailTable tbody tr:last-child .detailTd {
   border-bottom: none;
+}
+
+.detailDeleteBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  color: #9CA3AF;
+  background-color: rgba(31, 41, 55, 0.5);
+  border: 1px solid $simple-border;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+
+  &:hover:not(:disabled) {
+    color: #FCA5A5;
+    background-color: rgba(185, 28, 28, 0.15);
+    border-color: rgba(185, 28, 28, 0.4);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.7;
+  }
+}
+
+.detailDeleteIcon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.detailDeleteSpinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid $simple-border;
+  border-top-color: #F87171;
+  border-radius: 50%;
+  animation: exportSpinner 0.7s linear infinite;
 }
 
 .detailRowPaid {
@@ -1261,6 +1458,19 @@ $simple-border: #1A1D28;
   }
 }
 
+.totalsCellSync {
+  flex: 0 0 auto;
+  margin-left: auto;
+  .totalsValue {
+    font-size: 12px;
+    font-weight: 700;
+    color: #6B7280;
+  }
+  .totalsValueUnit {
+    margin-left: 0.35em;
+  }
+}
+
 .totalsLabel {
   font-size: 12px;
   color: #6B7280;
@@ -1314,9 +1524,96 @@ $simple-border: #1A1D28;
 
 .uploadSuccess {
   margin-top: 12px;
+  margin-left: 16px;
   font-size: 13px;
   font-weight: 600;
   color: #4ADE80;
   animation: messagePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  display: inline-flex;
+  align-items: center;
+}
+
+// Email supplier modal (dashboard 2.0)
+.emailModalOverlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.emailModalBox {
+  background-color: #1A1D28;
+  border: 1px solid $simple-border;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 480px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.emailModalTitle {
+  margin: 0 0 20px 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #E2E8F0;
+}
+
+.emailModalField {
+  margin-bottom: 16px;
+}
+
+.emailModalLabel {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #6B7280;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.emailModalValue {
+  font-size: 14px;
+  color: #E2E8F0;
+  padding: 10px 12px;
+  background-color: rgba(26, 29, 40, 0.8);
+  border: 1px solid $simple-border;
+  border-radius: 8px;
+  word-break: break-all;
+}
+
+.emailModalBody {
+  font-size: 14px;
+  color: #E2E8F0;
+  padding: 12px;
+  background-color: rgba(26, 29, 40, 0.8);
+  border: 1px solid $simple-border;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  min-height: 100px;
+}
+
+.emailModalClose {
+  margin-top: 20px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #E2E8F0;
+  background-color: #4B5563;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 0.2s ease;
+
+  &:hover {
+    background-color: #6B7280;
+  }
 }
 

@@ -34,22 +34,27 @@ function formatTableAmount(amount) {
   }).format(amount);
 }
 
+/**
+ * Returns { text } for "Never synced" / "Just now", or { num, unit } for "5 min ago" etc.
+ * Used so the number and unit can be rendered in separate spans with a guaranteed gap.
+ */
 function formatLastSynced(date) {
-  if (!date) return 'Never synced';
+  if (!date) return { text: 'Never synced' };
   const diffMs = Date.now() - date.getTime();
   const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'Just now';
-  if (diffMin < 60) return `${diffMin} min ago`;
+  if (diffMin < 1) return { text: 'Just now' };
+  if (diffMin < 60) return { num: diffMin, unit: 'min ago' };
   const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return { num: diffHr, unit: 'h ago' };
   const diffDays = Math.floor(diffHr / 24);
-  return `${diffDays}d ago`;
+  return { num: diffDays, unit: 'd ago' };
 }
 
 const DASHBOARD_DATA_URL = "/api/v2/dashboard/dashboard-data";
 const DASHBOARD_TAB2_URL = "/api/v2/dashboard/dashboard-tab-2";
 const DASHBOARD_TAB3_URL = "/api/v2/dashboard/dashboard-tab-3";
 const ALL_STATEMENTS_URL = "/api/v2/supplier-logs/all-statements";
+const STATEMENT_CONTACT_IDS_URL = "/api/v2/supplier-logs/statement-contact-ids";
 const TAB2_PAGE_SIZE = 50;
 
 const ALLOWED_TYPES = [
@@ -162,22 +167,23 @@ function sortTableRows(rows, sortColumn, sortDir) {
 
 /** Sort detail table rows (invoice list in expanded row) by column. */
 function sortDetailRows(rows, sortColumn, sortDir) {
-  if (!rows || rows.length === 0 || !sortColumn) return rows;
+  if (!rows || rows.length === 0 || !sortColumn || sortColumn === "delete") return rows;
   const mult = sortDir === "asc" ? 1 : -1;
   return [...rows].sort((a, b) => {
-    let va = a[sortColumn];
-    let vb = b[sortColumn];
+    const sortKey = sortColumn === "supplierOrigAmt" ? "supplierOriginalAmount" : sortColumn === "xeroOrigAmt" ? "xeroOriginalAmount" : sortColumn;
+    let va = a[sortKey];
+    let vb = b[sortKey];
     if (sortColumn === "date") {
       const da = va ? new Date(va).getTime() : 0;
       const db = vb ? new Date(vb).getTime() : 0;
       return mult * (da - db);
     }
-    if (sortColumn === "invoiceNumber" || sortColumn === "issue" || sortColumn === "status") {
+    if (sortColumn === "invoiceNumber" || sortColumn === "issue" || sortColumn === "status" || sortColumn === "currency") {
       va = String(va ?? "").toLowerCase();
       vb = String(vb ?? "").toLowerCase();
       return mult * (va < vb ? -1 : va > vb ? 1 : 0);
     }
-    if (sortColumn === "supplierAmt" || sortColumn === "xeroAmt" || sortColumn === "difference" || sortColumn === "supplierOriginalAmount") {
+    if (sortColumn === "supplierAmt" || sortColumn === "xeroAmt" || sortColumn === "difference" || sortColumn === "supplierOriginalAmount" || sortColumn === "supplierOrigAmt" || sortColumn === "xeroOrigAmt") {
       va = va == null || va === "" ? NaN : Number(va);
       vb = vb == null || vb === "" ? NaN : Number(vb);
       if (Number.isNaN(va) && Number.isNaN(vb)) return 0;
@@ -311,6 +317,32 @@ export default function SimpleApp() {
     [statementsList]
   );
 
+  const statementsBySupplier = useMemo(() => {
+    // Include all statements from the list (no filter by total) so every statement in DB for that contact id is shown
+    const byContactId = {};
+    for (const log of statementsList) {
+      const rawKey = log.contactId ?? log.supplier?.name ?? "";
+      const key = typeof rawKey === "string" ? rawKey : String(rawKey || "");
+      const bucketKey = key || "unknown";
+      if (!byContactId[bucketKey]) byContactId[bucketKey] = [];
+      byContactId[bucketKey].push(log);
+    }
+    for (const arr of Object.values(byContactId)) {
+      arr.sort((a, b) => new Date(b.addedAt || 0) - new Date(a.addedAt || 0));
+    }
+    return Object.keys(byContactId)
+      .sort((a, b) => {
+        const nameA = (byContactId[a][0]?.supplier?.name ?? a);
+        const nameB = (byContactId[b][0]?.supplier?.name ?? b);
+        return nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
+      })
+      .map((contactKey) => {
+        const statements = byContactId[contactKey];
+        const supplierName = statements[0]?.supplier?.name ?? contactKey;
+        return { supplierName, contactId: contactKey, statements };
+      });
+  }, [statementsList]);
+
   const handleSort = (column) => {
     setSortByTab((prev) => {
       const current = prev[activeTab];
@@ -391,25 +423,46 @@ export default function SimpleApp() {
     if (activeTab === "attention") setTab2Page(1);
   }, [activeTab]);
 
-  // Fetch recent statements when Statements tab is active
+  // Fetch statements from DB per supplier by contact id when Statements tab is active
   useEffect(() => {
     if (activeTab !== "statements") return;
     let cancelled = false;
     setStatementsLoading(true);
     setStatementsError("");
-    fetch(
-      `${ALL_STATEMENTS_URL}?page=1&sortBy=processDateTime&sortOrder=desc`,
-      { credentials: "include" }
-    )
+    const sortBy = "processDateTime";
+    const sortOrder = "desc";
+    fetch(STATEMENT_CONTACT_IDS_URL, { credentials: "include" })
       .then((r) => r.json())
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled) return;
-        if (data.success && Array.isArray(data.logs)) {
-          setStatementsList(data.logs);
-        } else {
+        if (!data.success || !Array.isArray(data.contactIds) || data.contactIds.length === 0) {
           setStatementsList([]);
-          setStatementsError("Failed to load statements");
+          if (data.success && Array.isArray(data.contactIds) && data.contactIds.length === 0) {
+            setStatementsError("");
+          } else {
+            setStatementsError("Failed to load statements");
+          }
+          return;
         }
+        const allLogs = [];
+        for (const { contactId, supplierName } of data.contactIds) {
+          if (cancelled) break;
+          let page = 1;
+          let totalPages = 1;
+          do {
+            const res = await fetch(
+              `${ALL_STATEMENTS_URL}?page=${page}&sortBy=${sortBy}&sortOrder=${sortOrder}&contactId=${encodeURIComponent(contactId)}`,
+              { credentials: "include" }
+            );
+            const pageData = await res.json();
+            if (cancelled) break;
+            if (!pageData.success || !Array.isArray(pageData.logs)) break;
+            allLogs.push(...pageData.logs);
+            totalPages = pageData.pages ?? 1;
+            page++;
+          } while (page <= totalPages && !cancelled);
+        }
+        if (!cancelled) setStatementsList(allLogs);
       })
       .catch(() => {
         if (!cancelled) {
@@ -424,11 +477,20 @@ export default function SimpleApp() {
   }, [activeTab]);
 
   const [expandedRows, setExpandedRows] = useState(() => new Set());
+  const [expandedStatementSuppliers, setExpandedStatementSuppliers] = useState(() => new Set());
   const toggleRowExpanded = (supplier) => {
     setExpandedRows((prev) => {
       const next = new Set(prev);
       if (next.has(supplier)) next.delete(supplier);
       else next.add(supplier);
+      return next;
+    });
+  };
+  const toggleStatementSupplierExpanded = (supplierName) => {
+    setExpandedStatementSuppliers((prev) => {
+      const next = new Set(prev);
+      if (next.has(supplierName)) next.delete(supplierName);
+      else next.add(supplierName);
       return next;
     });
   };
@@ -439,6 +501,14 @@ export default function SimpleApp() {
       return next;
     });
   };
+
+  const [emailModalRow, setEmailModalRow] = useState(null);
+  useEffect(() => {
+    if (emailModalRow == null) return;
+    const onKeyDown = (e) => { if (e.key === "Escape") setEmailModalRow(null); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [emailModalRow]);
 
   const [viewAllShownForRow, setViewAllShownForRow] = useState(() => new Set());
   const toggleViewAll = (rowKey) => {
@@ -452,6 +522,8 @@ export default function SimpleApp() {
 
   // Tab 3 (reconciled): selected invoice ids for bulk actions (e.g. Paid)
   const [tab3SelectedIds, setTab3SelectedIds] = useState(() => new Set());
+  const [deletingInvoiceId, setDeletingInvoiceId] = useState(null);
+  const [hidePaidAndMatchedInTab1, setHidePaidAndMatchedInTab1] = useState(false);
   const toggleTab3InvoiceSelection = (id) => {
     setTab3SelectedIds((prev) => {
       const next = new Set(prev);
@@ -531,6 +603,22 @@ export default function SimpleApp() {
       alert(err.message || "Failed to mark as paid");
     }
   }, [refetchTab3]);
+
+  const handleHardDeleteInvoice = useCallback(async (invoiceId) => {
+    if (!invoiceId) return;
+    setDeletingInvoiceId(invoiceId);
+    try {
+      const res = await fetch(`/api/v2/dashboard/invoices/${encodeURIComponent(invoiceId)}`, { method: "DELETE", credentials: "include" });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || "Failed to delete invoice");
+      await Promise.all([refetchDashboardData(), refetchTab2(), refetchTab3()]);
+    } catch (err) {
+      console.error(err);
+      alert(err.message || "Failed to delete invoice");
+    } finally {
+      setDeletingInvoiceId(null);
+    }
+  }, [refetchDashboardData, refetchTab2, refetchTab3]);
 
   const handleUndoPaid = useCallback(async () => {
     const { invoiceIds } = tab3PaidToast;
@@ -648,24 +736,27 @@ export default function SimpleApp() {
             supplier,
             issue: "AMOUNT MISMATCH",
             invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
-            fileAmount: p.fileAmountGBP != null ? p.fileAmountGBP : (Number(fileInv.amount) ?? ""),
-            xeroAmount: p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(xeroInv.amount) ?? ""),
-            currency: "GBP",
+            fileAmount: fileInv.amount != null ? Number(fileInv.amount) : "",
+            fileCurrency: fileInv.currency ?? "GBP",
+            xeroAmount: xeroInv.amount != null ? Number(xeroInv.amount) : "",
+            xeroCurrency: xeroInv.currency ?? "GBP",
             dueDate: (xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)
               ? new Date((xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)).toLocaleDateString("en-GB")
               : "",
           });
         }
         for (const u of s.unpairedInvoices || []) {
-          const amtGBP = u.amountGBP != null ? u.amountGBP : (Number(u.amount) ?? "");
+          const amtOrig = u.amount != null ? Number(u.amount) : "";
+          const curr = u.currency ?? "GBP";
           const dueOrDate = u.dueDate || u.date;
           rows.push({
             supplier,
             issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
             invoiceNumber: u.invoiceNumber || "",
-            fileAmount: u.fromXero ? "" : amtGBP,
-            xeroAmount: u.fromXero ? amtGBP : "",
-            currency: "GBP",
+            fileAmount: u.fromXero ? "" : amtOrig,
+            fileCurrency: u.fromXero ? "" : curr,
+            xeroAmount: u.fromXero ? amtOrig : "",
+            xeroCurrency: u.fromXero ? curr : "",
             dueDate: dueOrDate ? new Date(dueOrDate).toLocaleDateString("en-GB") : "",
           });
         }
@@ -679,8 +770,9 @@ export default function SimpleApp() {
         { label: "Issue", key: "issue" },
         { label: "Invoice #", key: "invoiceNumber" },
         { label: "File Amount", key: "fileAmount" },
+        { label: "File Currency", key: "fileCurrency" },
         { label: "Xero Amount", key: "xeroAmount" },
-        { label: "Currency", key: "currency" },
+        { label: "Xero Currency", key: "xeroCurrency" },
         { label: "Due Date", key: "dueDate" },
       ];
       await exportToExcel(rows, headers, `tab2-issues-${new Date().toISOString().slice(0, 10)}`);
@@ -703,24 +795,27 @@ export default function SimpleApp() {
         supplier,
         issue: "AMOUNT MISMATCH",
         invoiceNumber: fileInv.invoiceNumber || xeroInv.invoiceNumber || "",
-      fileAmount: p.fileAmountGBP != null ? p.fileAmountGBP : (Number(fileInv.amount) ?? ""),
-        xeroAmount: p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(xeroInv.amount) ?? ""),
-        currency: "GBP",
+        fileAmount: fileInv.amount != null ? Number(fileInv.amount) : "",
+        fileCurrency: fileInv.currency ?? "GBP",
+        xeroAmount: xeroInv.amount != null ? Number(xeroInv.amount) : "",
+        xeroCurrency: xeroInv.currency ?? "GBP",
         dueDate: (xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)
           ? new Date((xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)).toLocaleDateString("en-GB")
           : "",
       });
     }
     for (const u of row.unpairedInvoices || []) {
-      const amtGBP = u.amountGBP != null ? u.amountGBP : (Number(u.amount) ?? "");
+      const amtOrig = u.amount != null ? Number(u.amount) : "";
+      const curr = u.currency ?? "GBP";
       const dueOrDate = u.dueDate || u.date;
       rows.push({
         supplier,
         issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
         invoiceNumber: u.invoiceNumber || "",
-        fileAmount: u.fromXero ? "" : amtGBP,
-        xeroAmount: u.fromXero ? amtGBP : "",
-        currency: "GBP",
+        fileAmount: u.fromXero ? "" : amtOrig,
+        fileCurrency: u.fromXero ? "" : curr,
+        xeroAmount: u.fromXero ? amtOrig : "",
+        xeroCurrency: u.fromXero ? curr : "",
         dueDate: dueOrDate ? new Date(dueOrDate).toLocaleDateString("en-GB") : "",
       });
     }
@@ -736,8 +831,9 @@ export default function SimpleApp() {
         { label: "Issue", key: "issue" },
         { label: "Invoice #", key: "invoiceNumber" },
         { label: "File Amount", key: "fileAmount" },
+        { label: "File Currency", key: "fileCurrency" },
         { label: "Xero Amount", key: "xeroAmount" },
-        { label: "Currency", key: "currency" },
+        { label: "Xero Currency", key: "xeroCurrency" },
         { label: "Due Date", key: "dueDate" },
       ];
       const slug = String(supplier).replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 40);
@@ -1014,7 +1110,7 @@ export default function SimpleApp() {
     },
     {
       label: "Difference (£)",
-      value: formatAmount(difference),
+      value: difference != null ? `£${formatAmount(difference)}` : formatAmount(difference),
       valueClass:
         difference != null
           ? difference === 0
@@ -1115,7 +1211,10 @@ export default function SimpleApp() {
         <>
         <section className={styles.batchSummary} aria-label="Upload summary">
           {uploadLoading && (
-            <p className={styles.uploadSuccess}>Processing…</p>
+            <p className={styles.uploadSuccess}>
+              <span className={styles.loadingSpinner} aria-hidden />
+              <span className={styles.loadingMessage}>Processing…</span>
+            </p>
           )}
           {uploadError && !uploadLoading && (
             <p className={styles.uploadError} role="alert">
@@ -1185,17 +1284,23 @@ export default function SimpleApp() {
               </span>
             </div>
           ))}
+          <div className={`${styles.totalsCell} ${styles.totalsCellSync}`}>
+            <span className={styles.totalsLabel}>Last synced with Xero</span>
+            <span className={styles.totalsValue}>
+              {(() => {
+                const sync = formatLastSynced(lastSyncedAt);
+                if (sync.text) return sync.text;
+                return (
+                  <>&nbsp;
+                    <span>{sync.num}</span>
+                    <span className={styles.totalsValueUnit}>{sync.unit}</span>
+                  </>
+                );
+              })()}
+            </span>
+          </div>
           </div>
         </section>
-
-        <div style={{
-          fontSize: '12px',
-          color: '#9CA3AF',
-          padding: '4px 0',
-          textAlign: 'right',
-        }}>
-          Last synced with Xero: {formatLastSynced(lastSyncedAt)}
-        </div>
 
         <div className={styles.tabsContainer}>
           <nav
@@ -1306,53 +1411,99 @@ export default function SimpleApp() {
         >
           {activeTab === "statements" ? (
             <section className={styles.tableSection} aria-label="Statements">
-              <h2 className={styles.statementsListTitle}>Recent statements</h2>
               {statementsLoading && (
-                <p className={styles.statementsListMessage}>Loading…</p>
+                <div className={styles.statementsLoadingWrap} aria-busy aria-label="Loading statements">
+                  <span className={styles.loadingSpinner} aria-hidden />
+                  <span className={styles.loadingMessage}>Loading statements…</span>
+                </div>
               )}
               {!statementsLoading && statementsError && (
                 <p className={styles.statementsListMessage}>{statementsError}</p>
               )}
-              {!statementsLoading && !statementsError && statementsWithInvoices.length === 0 && (
+              {!statementsLoading && !statementsError && statementsBySupplier.length === 0 && (
                 <p className={styles.statementsListMessage}>No statements with invoices.</p>
               )}
-              {!statementsLoading && !statementsError && statementsWithInvoices.length > 0 && (
+              {!statementsLoading && !statementsError && statementsBySupplier.length > 0 && (
                 <div className={styles.tableWrap}>
                   <table className={styles.supplierTable}>
                     <thead>
                       <tr>
-                        <th className={styles.tableTh}>Supplier</th>
-                        <th className={styles.tableTh}>Processed</th>
-                        <th className={styles.tableTh}>Download</th>
+                        <th className={styles.tableTh}>SUPPLIER NAME</th>
+                        <th className={styles.tableTh}>STATEMENTS</th>
+                        <th className={styles.tableTh}>INVOICES</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {statementsWithInvoices.map((log) => (
-                        <tr key={log._id}>
-                          <td className={styles.tableTd}>
-                            {log.supplier?.name ?? "Unknown"}
-                          </td>
-                          <td className={styles.tableTd}>
-                            {formatLogDateTime(log.addedAt) ?? "—"}
-                          </td>
-                          <td className={styles.tableTd}>
-                            {(() => {
-                              const isPdf = /\.pdf$/i.test(String(log?.file ?? ""));
-                              return (
-                                <a
-                                  href={`/file/${log._id}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className={styles.statementsDownloadLink}
-                                  {...(isPdf ? {} : { download: true })}
-                                >
-                                  {isPdf ? "View PDF" : "Download file"}
-                                </a>
-                              );
-                            })()}
-                          </td>
-                        </tr>
-                      ))}
+                      {statementsBySupplier.map(({ supplierName, contactId, statements }) => {
+                        const totalInvoices = statements.reduce((sum, log) => sum + (log.total ?? 0), 0);
+                        const expandKey = contactId || supplierName;
+                        const isExpanded = expandedStatementSuppliers.has(expandKey);
+                        return (
+                          <Fragment key={expandKey}>
+                            <tr
+                              className={`${styles.tableRowExpandable} ${isExpanded ? styles.tableRowExpanded : ""}`}
+                              onClick={() => toggleStatementSupplierExpanded(expandKey)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => e.key === "Enter" && toggleStatementSupplierExpanded(expandKey)}
+                              aria-expanded={isExpanded}
+                            >
+                              <td className={styles.tableTd}>
+                                <span className={`${styles.rowExpandIcon} ${isExpanded ? styles.rowExpandIconOpen : ""}`} aria-hidden>▶</span>
+                                <span className={styles.supplierName} title={supplierName}>{supplierName}</span>
+                              </td>
+                              <td className={styles.tableTd}>{statements.length}</td>
+                              <td className={styles.tableTd}>{totalInvoices}</td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className={styles.tableRowDetail}>
+                                <td colSpan={3} className={styles.tableTdDetail}>
+                                  <div className={styles.detailPanel}>
+                                    <h3 className={styles.detailTitle}>Statements</h3>
+                                    <div className={styles.detailTableWrap}>
+                                      <table className={styles.detailTable}>
+                                        <thead>
+                                          <tr>
+                                            <th className={styles.detailTh}>PROCESSED</th>
+                                            <th className={styles.detailTh}>INVOICES</th>
+                                            <th className={styles.detailTh}>VIEW PDF</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {statements.map((log) => {
+                                            const isPdf = /\.pdf$/i.test(String(log?.file ?? ""));
+                                            const invoiceCount = log.total ?? 0;
+                                            return (
+                                              <tr key={log._id}>
+                                                <td className={styles.detailTd}>
+                                                  {formatLogDateTime(log.addedAt) ?? "—"}
+                                                </td>
+                                                <td className={styles.detailTd}>{invoiceCount}</td>
+                                                <td className={styles.detailTd}>
+                                                  <a
+                                                    href={`/file/${log._id}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className={styles.statementsDownloadLink}
+                                                    {...(isPdf ? {} : { download: true })}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                  >
+                                                    {isPdf ? "View PDF" : "Download file"}
+                                                  </a>
+                                                </td>
+                                              </tr>
+                                            );
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1366,14 +1517,14 @@ export default function SimpleApp() {
                   <tr>
                     {(activeTab === "reconciled"
                       ? [
-                          ["supplier", "SUPPLIER"],
+                          ["supplier", "SUPPLIER NAME"],
                           ["amountGBP", "AMOUNT (£)"],
                           ["pairCount", "PAIRS"],
                           ["pairsOverdue", "PAIRS OVERDUE"],
                           ["status", "STATUS"],
                         ]
                       : [
-                          ["supplier", "SUPPLIER"],
+                          ["supplier", "SUPPLIER NAME"],
                           ["theySay", "THEY SAY WE OWE (£)"],
                           ["xeroSays", "XERO SAYS WE OWE (£)"],
                           ["difference", "DIFFERENCE (£)"],
@@ -1454,11 +1605,23 @@ export default function SimpleApp() {
                             const diff = p.differenceGBP != null ? p.differenceGBP : 0;
                             const date = p.fileInvoice?.dueDate || p.fileInvoice?.date || p.xeroInvoice?.dueDate || p.xeroInvoice?.date;
                             const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
+                            const fileCur = (p.fileInvoice?.currency && String(p.fileInvoice.currency).toUpperCase()) || "GBP";
+                            const xeroCur = (p.xeroInvoice?.currency && String(p.xeroInvoice.currency).toUpperCase()) || "GBP";
+                            const sameCur = fileCur === xeroCur;
+                            const diffOrig = sameCur && p.fileInvoice?.amount != null && p.xeroInvoice?.amount != null
+                              ? Math.round((Number(p.xeroInvoice.amount) - Number(p.fileInvoice.amount)) * 100) / 100
+                              : null;
                             return {
+                              deleteInvoiceId: p.fileInvoice?._id ? String(p.fileInvoice._id) : null,
                               invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
                               date: dateStr,
                               currency: p.fileInvoice?.currency ?? p.xeroInvoice?.currency ?? "GBP",
-                              supplierOriginalAmount: p.fileInvoice?.amount != null ? Number(p.fileInvoice.amount) : null,
+                              supplierAmountOriginal: p.fileInvoice?.amount != null ? Number(p.fileInvoice.amount) : null,
+                              supplierCurrencyOriginal: p.fileInvoice?.currency ?? "GBP",
+                              xeroAmountOriginal: p.xeroInvoice?.amount != null ? Number(p.xeroInvoice.amount) : null,
+                              xeroCurrencyOriginal: p.xeroInvoice?.currency ?? "GBP",
+                              differenceOriginal: diffOrig,
+                              differenceOriginalCurrency: diffOrig != null ? (p.fileInvoice?.currency ?? "GBP") : null,
                               issue: "Matched",
                               supplierAmt: fa,
                               xeroAmt: xa,
@@ -1474,11 +1637,23 @@ export default function SimpleApp() {
                               const xa = p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(p.xeroInvoice?.amount) ?? 0);
                               const date = p.xeroInvoice?.dueDate || p.xeroInvoice?.date || p.fileInvoice?.dueDate || p.fileInvoice?.date;
                               const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
+                              const fileCur = (p.fileInvoice?.currency && String(p.fileInvoice.currency).toUpperCase()) || "GBP";
+                              const xeroCur = (p.xeroInvoice?.currency && String(p.xeroInvoice.currency).toUpperCase()) || "GBP";
+                              const sameCur = fileCur === xeroCur;
+                              const diffOrig = sameCur && p.fileInvoice?.amount != null && p.xeroInvoice?.amount != null
+                                ? Math.round((Number(p.xeroInvoice.amount) - Number(p.fileInvoice.amount)) * 100) / 100
+                                : null;
                               return {
+                                deleteInvoiceId: p.fileInvoice?._id ? String(p.fileInvoice._id) : null,
                                 invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
                                 date: dateStr,
                                 currency: p.fileInvoice?.currency ?? p.xeroInvoice?.currency ?? "GBP",
-                                supplierOriginalAmount: p.fileInvoice?.amount != null ? Number(p.fileInvoice.amount) : null,
+                                supplierAmountOriginal: p.fileInvoice?.amount != null ? Number(p.fileInvoice.amount) : null,
+                                supplierCurrencyOriginal: p.fileInvoice?.currency ?? "GBP",
+                                xeroAmountOriginal: p.xeroInvoice?.amount != null ? Number(p.xeroInvoice.amount) : null,
+                                xeroCurrencyOriginal: p.xeroInvoice?.currency ?? "GBP",
+                                differenceOriginal: diffOrig,
+                                differenceOriginalCurrency: diffOrig != null ? (p.fileInvoice?.currency ?? "GBP") : null,
                                 issue: "AMOUNT MISMATCH",
                                 supplierAmt: fa,
                                 xeroAmt: xa,
@@ -1491,10 +1666,16 @@ export default function SimpleApp() {
                               const dateStr = (u.dueDate || u.date) ? new Date(u.dueDate || u.date).toLocaleDateString("en-GB") : "–";
                               const origAmt = u.amount != null ? Number(u.amount) : null;
                               return {
+                                deleteInvoiceId: u._id ? String(u._id) : null,
                                 invoiceNumber: u.invoiceNumber || "—",
                                 date: dateStr,
                                 currency: u.currency ?? "GBP",
-                                supplierOriginalAmount: origAmt,
+                                supplierAmountOriginal: u.supplierAmountOriginal ?? (u.fromXero ? null : origAmt),
+                                supplierCurrencyOriginal: u.supplierCurrencyOriginal ?? (u.fromXero ? null : (u.currency ?? "GBP")),
+                                xeroAmountOriginal: u.xeroAmountOriginal ?? (u.fromXero ? origAmt : null),
+                                xeroCurrencyOriginal: u.xeroCurrencyOriginal ?? (u.fromXero ? (u.currency ?? "GBP") : null),
+                                differenceOriginal: null,
+                                differenceOriginalCurrency: null,
                                 issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
                                 supplierAmt: u.fromXero ? null : amt,
                                 xeroAmt: u.fromXero ? amt : null,
@@ -1514,16 +1695,20 @@ export default function SimpleApp() {
                             : viewAllShownForRow.has(rowKey)
                               ? viewAllInvoices
                               : detailInvoices;
-                    const sortedDetailRows = sortDetailRows(detailRows, detailTableSort.column, detailTableSort.dir);
+                    const detailRowsFiltered =
+                      activeTab === "latest" && hidePaidAndMatchedInTab1
+                        ? detailRows.filter((inv) => inv.issue !== "paid" && inv.issue !== "Matched" && inv.status !== "Paid")
+                        : detailRows;
+                    const sortedDetailRows = sortDetailRows(detailRowsFiltered, detailTableSort.column, detailTableSort.dir);
                     const detailColumns = [
                       ["invoiceNumber", "INVOICE #"],
                       ["date", "DATE"],
-                      ["supplierOriginalAmount", "SUPPLIER ORIGINAL CURRENCY"],
                       ["issue", "ISSUE"],
-                      ["supplierAmt", "SUPPLIER AMT (£)"],
-                      ["xeroAmt", "XERO AMT (£)"],
-                      ["difference", "DIFFERENCE (£)"],
+                      ["supplierAmt", "SUPPLIER AMT"],
+                      ["xeroAmt", "XERO AMT"],
+                      ["difference", "DIFFERENCE"],
                       ["status", "STATUS"],
+                      ["delete", ""],
                     ];
                     const totalUnpaidCount =
                       activeTab === "attention"
@@ -1541,9 +1726,9 @@ export default function SimpleApp() {
                           onKeyDown={(e) => e.key === "Enter" && toggleRowExpanded(rowKey)}
                           aria-expanded={isExpanded}
                         >
-                          <td className={styles.tableTd}>
+                          <td className={`${styles.tableTd} ${styles.tableTdSupplier}`}>
                             <span className={`${styles.rowExpandIcon} ${isExpanded ? styles.rowExpandIconOpen : ""}`} aria-hidden>▶</span>
-                            {row.supplier}
+                            <span className={styles.supplierName} title={row.supplier}>{row.supplier}</span>
                           </td>
                           {activeTab === "reconciled" ? (
                             <>
@@ -1734,11 +1919,13 @@ export default function SimpleApp() {
                                                   <th className={styles.detailTh}>DATE</th>
                                                   <th className={styles.detailTh}>AMOUNT (£)</th>
                                                   <th className={styles.detailTh} style={{ width: 80 }} />
+                                                  <th className={styles.detailTh} style={{ width: 44 }} />
                                                 </tr>
                                               </thead>
                                               <tbody>
                                                 {reconciledDetailInvoices.map((inv, j) => {
                                                   const invId = `${rowKey}-${j}`;
+                                                  const delId = inv.deleteInvoiceId ?? inv._id;
                                                   return (
                                                     <tr key={inv.invoiceNumber ? `${inv.invoiceNumber}-${j}` : j}>
                                                       <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
@@ -1754,7 +1941,14 @@ export default function SimpleApp() {
                                                       </td>
                                                       <td className={styles.detailTd}>{inv.invoiceNumber}</td>
                                                       <td className={styles.detailTd}>{inv.date || "–"}</td>
-                                                      <td className={styles.detailTd}>{inv.supplierAmt != null ? formatTableAmount(inv.supplierAmt) : inv.xeroAmt != null ? formatTableAmount(inv.xeroAmt) : "–"}</td>
+                                                      <td className={styles.detailTd}>
+                                                        <span className={styles.supplierOrigAmtCell}>
+                                                          <span className={styles.supplierOrigAmtCurrency}>{inv.supplierCurrencyOriginal ?? inv.xeroCurrencyOriginal ?? inv.currency ?? "–"}</span>
+                                                          <span className={styles.supplierOrigAmtAmount}>
+                                                            {inv.supplierAmountOriginal != null ? formatTableAmount(inv.supplierAmountOriginal) : inv.xeroAmountOriginal != null ? formatTableAmount(inv.xeroAmountOriginal) : inv.supplierAmt != null ? formatTableAmount(inv.supplierAmt) : inv.xeroAmt != null ? formatTableAmount(inv.xeroAmt) : "–"}
+                                                          </span>
+                                                        </span>
+                                                      </td>
                                                       <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
                                                         <button
                                                           type="button"
@@ -1768,6 +1962,34 @@ export default function SimpleApp() {
                                                         >
                                                           Paid
                                                         </button>
+                                                      </td>
+                                                      <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
+                                                        {delId ? (
+                                                          <button
+                                                            type="button"
+                                                            className={styles.detailDeleteBtn}
+                                                            onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              if (window.confirm("Permanently delete the file invoice for this row? The Xero invoice will be kept. This cannot be undone.")) {
+                                                                handleHardDeleteInvoice(delId);
+                                                              }
+                                                            }}
+                                                            disabled={deletingInvoiceId === delId}
+                                                            aria-label={`Delete invoice ${inv.invoiceNumber || j + 1}`}
+                                                            title="Delete (file invoice only)"
+                                                          >
+                                                            {deletingInvoiceId === delId ? (
+                                                              <span className={styles.detailDeleteSpinner} aria-hidden />
+                                                            ) : (
+                                                              <svg className={styles.detailDeleteIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                                <polyline points="3 6 5 6 21 6" />
+                                                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                                                <line x1="10" y1="11" x2="10" y2="17" />
+                                                                <line x1="14" y1="11" x2="14" y2="17" />
+                                                              </svg>
+                                                            )}
+                                                          </button>
+                                                        ) : null}
                                                       </td>
                                                     </tr>
                                                   );
@@ -1820,11 +2042,28 @@ export default function SimpleApp() {
                                     </button>
                                   )}
                                   <div className={styles.detailActions}>
+                                    {activeTab === "latest" && (
+                                      <button
+                                        type="button"
+                                        className={hidePaidAndMatchedInTab1 ? styles.tab1HideToggleActive : styles.tab1HideToggle}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setHidePaidAndMatchedInTab1((v) => !v);
+                                        }}
+                                        aria-pressed={hidePaidAndMatchedInTab1}
+                                        aria-label={hidePaidAndMatchedInTab1 ? "Show paid and matched" : "Hide paid and matched"}
+                                      >
+                                        {hidePaidAndMatchedInTab1 ? "Show paid & matched" : "Hide paid & matched"}
+                                      </button>
+                                    )}
                                     <button
                                       type="button"
                                       className={styles.detailEmailBtn}
-                                      disabled
-                                      aria-disabled="true"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEmailModalRow(row);
+                                      }}
+                                      aria-label="Email supplier"
                                     >
                                       Email Supplier
                                     </button>
@@ -1844,6 +2083,9 @@ export default function SimpleApp() {
                                 {activeTab === "latest" && viewAllShownForRow.has(rowKey) && viewAllInvoices.length === 0 && (
                                   <p className={styles.detailNoUnpaid}>No unpaid invoices.</p>
                                 )}
+                                {activeTab === "latest" && hidePaidAndMatchedInTab1 && detailRows.length > 0 && sortedDetailRows.length === 0 && (
+                                  <p className={styles.detailNoUnpaid}>All invoices here are paid or matched.</p>
+                                )}
                                 {detailRows.length > 0 && (
                                 <div className={styles.detailTableWrap}>
                                   <table className={styles.detailTable}>
@@ -1852,15 +2094,15 @@ export default function SimpleApp() {
                                         {detailColumns.map(([key, label]) => (
                                           <th
                                             key={key}
-                                            className={`${styles.detailTh} ${styles.detailThSortable}`}
-                                            onClick={(e) => { e.stopPropagation(); handleDetailSort(key); }}
-                                            onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); handleDetailSort(key); } }}
+                                            className={key === "delete" ? styles.detailTh : `${styles.detailTh} ${styles.detailThSortable}`}
+                                            onClick={key === "delete" ? undefined : (e) => { e.stopPropagation(); handleDetailSort(key); }}
+                                            onKeyDown={key === "delete" ? undefined : (e) => { if (e.key === "Enter") { e.stopPropagation(); handleDetailSort(key); } }}
                                             role="columnheader"
-                                            tabIndex={0}
-                                            aria-sort={detailTableSort.column === key ? (detailTableSort.dir === "asc" ? "ascending" : "descending") : undefined}
+                                            tabIndex={key === "delete" ? -1 : 0}
+                                            aria-sort={key === "delete" ? undefined : (detailTableSort.column === key ? (detailTableSort.dir === "asc" ? "ascending" : "descending") : undefined)}
                                           >
                                             {label}
-                                            {detailTableSort.column === key && (
+                                            {key !== "delete" && detailTableSort.column === key && (
                                               <span className={styles.detailSortIcon} aria-hidden>
                                                 {detailTableSort.dir === "asc" ? " ↑" : " ↓"}
                                               </span>
@@ -1877,9 +2119,6 @@ export default function SimpleApp() {
                                           <td className={styles.detailTd}>{inv.invoiceNumber}</td>
                                           <td className={styles.detailTd}>{inv.date || "–"}</td>
                                           <td className={styles.detailTd}>
-                                            {(inv.currency ?? "–") + (inv.supplierOriginalAmount != null ? ` (${formatTableAmount(inv.supplierOriginalAmount)})` : "")}
-                                          </td>
-                                          <td className={styles.detailTd}>
                                             {inv.issue === "paid" ? (
                                               <span className={styles.issuePillPaid}>paid</span>
                                             ) : inv.issue === "Matched" ? (
@@ -1895,19 +2134,63 @@ export default function SimpleApp() {
                                             )}
                                           </td>
                                           <td className={styles.detailTd}>
-                                            {inv.supplierAmt == null ? "–" : formatTableAmount(inv.supplierAmt)}
+                                            <span className={styles.supplierOrigAmtCell}>
+                                              <span className={styles.supplierOrigAmtCurrency}>{inv.supplierCurrencyOriginal ?? inv.currency ?? "–"}</span>
+                                              <span className={styles.supplierOrigAmtAmount}>{inv.supplierAmountOriginal != null ? formatTableAmount(inv.supplierAmountOriginal) : inv.supplierAmt != null ? formatTableAmount(inv.supplierAmt) : "–"}</span>
+                                            </span>
                                           </td>
-                                          <td className={styles.detailTd}>{inv.xeroAmt == null ? "–" : formatTableAmount(inv.xeroAmt)}</td>
+                                          <td className={styles.detailTd}>
+                                            <span className={styles.supplierOrigAmtCell}>
+                                              <span className={styles.supplierOrigAmtCurrency}>{inv.xeroCurrencyOriginal ?? inv.currency ?? "–"}</span>
+                                              <span className={styles.supplierOrigAmtAmount}>{inv.xeroAmountOriginal != null ? formatTableAmount(inv.xeroAmountOriginal) : inv.xeroAmt != null ? formatTableAmount(inv.xeroAmt) : "–"}</span>
+                                            </span>
+                                          </td>
                                           <td className={styles.detailTd}>
                                             {isPaid ? (
                                               <span className={styles.diffNeutral}>–</span>
                                             ) : inv.issue === "Matched" ? (
                                               <span className={styles.diffNeutral}>0.00</span>
+                                            ) : inv.differenceOriginal != null ? (
+                                              <span className={styles.supplierOrigAmtCell}>
+                                                <span className={styles.supplierOrigAmtCurrency}>{inv.differenceOriginalCurrency ?? "–"}</span>
+                                                <span className={styles.diffNegative}>{formatTableAmount(inv.differenceOriginal)}</span>
+                                              </span>
                                             ) : (
-                                              <span className={styles.diffNegative}>{formatTableAmount(inv.difference)}</span>
+                                              <span className={styles.supplierOrigAmtCell}>
+                                                <span className={styles.supplierOrigAmtCurrency}>GBP</span>
+                                                <span className={styles.diffNegative}>{formatTableAmount(inv.difference)}</span>
+                                              </span>
                                             )}
                                           </td>
                                           <td className={styles.detailTd}>{inv.status ?? "–"}</td>
+                                          <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
+                                            {(inv.deleteInvoiceId ?? inv._id) ? (
+                                              <button
+                                                type="button"
+                                                className={styles.detailDeleteBtn}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  if (window.confirm("Permanently delete this invoice? This cannot be undone.")) {
+                                                    handleHardDeleteInvoice(inv.deleteInvoiceId ?? inv._id);
+                                                  }
+                                                }}
+                                                disabled={deletingInvoiceId === (inv.deleteInvoiceId ?? inv._id)}
+                                                aria-label={`Delete invoice ${inv.invoiceNumber || "row"}`}
+                                                title="Delete invoice"
+                                              >
+                                                {deletingInvoiceId === (inv.deleteInvoiceId ?? inv._id) ? (
+                                                  <span className={styles.detailDeleteSpinner} aria-hidden />
+                                                ) : (
+                                                  <svg className={styles.detailDeleteIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                    <polyline points="3 6 5 6 21 6" />
+                                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                                    <line x1="10" y1="11" x2="10" y2="17" />
+                                                    <line x1="14" y1="11" x2="14" y2="17" />
+                                                  </svg>
+                                                )}
+                                              </button>
+                                            ) : null}
+                                          </td>
                                         </tr>
                                         );
                                       })}
@@ -1972,6 +2255,52 @@ export default function SimpleApp() {
           >
             Undo
           </button>
+        </div>
+      )}
+      {emailModalRow != null && (
+        <div
+          className={styles.emailModalOverlay}
+          onClick={() => setEmailModalRow(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="email-modal-title"
+        >
+          <div
+            className={styles.emailModalBox}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="email-modal-title" className={styles.emailModalTitle}>Email supplier</h2>
+            <div className={styles.emailModalField}>
+              <label className={styles.emailModalLabel}>To</label>
+              <div className={styles.emailModalValue}>
+                {String(emailModalRow.supplier || "").toLowerCase().replace(/\s+/g, ".")}@supplier.example.com
+              </div>
+            </div>
+            <div className={styles.emailModalField}>
+              <label className={styles.emailModalLabel}>Subject</label>
+              <div className={styles.emailModalValue}>
+                Invoice query – {emailModalRow.supplier || "Supplier"}
+              </div>
+            </div>
+            <div className={styles.emailModalField}>
+              <label className={styles.emailModalLabel}>Body</label>
+              <div className={styles.emailModalBody}>
+                Dear {emailModalRow.supplier || "Supplier"},
+                {"\n\n"}
+                Please find our query regarding the recent invoices. Could you confirm the details at your earliest convenience?
+                {"\n\n"}
+                Kind regards
+              </div>
+            </div>
+            <button
+              type="button"
+              className={styles.emailModalClose}
+              onClick={() => setEmailModalRow(null)}
+              aria-label="Close"
+            >
+              Close
+            </button>
+          </div>
         </div>
       )}
     </div>

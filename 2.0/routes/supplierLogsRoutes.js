@@ -5,6 +5,7 @@ const supplierLogsController = require("../controllers/supplierLogsController");
 router.get("/statements", supplierLogsController.getStatementsByVendor);
 router.get("/statements/:id/invoices", supplierLogsController.getInvoicesByStatementId);
 router.get("/all-statements", supplierLogsController.getAllStatements);
+router.get("/statement-contact-ids", supplierLogsController.getStatementContactIds);
 router.get("/statement-transfer", supplierLogsController.statementTransfer);
 router.get("/all-invoices", supplierLogsController.getAllInvoices);
 router.delete("/statements/:id", supplierLogsController.deleteStatement);

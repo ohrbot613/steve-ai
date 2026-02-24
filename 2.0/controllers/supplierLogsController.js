@@ -144,7 +144,11 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
     const page = Number(req.query.page) || 1;
     const sortBy = req.query.sortBy || "processDateTime";
     const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
+    const contactId = req.query.contactId ? String(req.query.contactId).trim() : null;
     const offset = (page - 1) * LIMIT;
+
+    const baseMatch = { isDeleted: { $ne: true } };
+    if (contactId) baseMatch.contactId = contactId;
 
     const sortField =
         sortBy === "statementIssueDate"
@@ -164,7 +168,7 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
                                     : "createdAt";
 
     const pipeline = [
-        { $match: { isDeleted: { $ne: true } } },
+        { $match: baseMatch },
         { $lookup: { from: "invoices-2.0", localField: "_id", foreignField: "statementId", as: "invoices", pipeline: [{ $match: { isDeleted: { $ne: true } } }] } },
         {
             $addFields: {
@@ -242,11 +246,12 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
 
     const [logsRaw, total] = await Promise.all([
         Statement.aggregate(pipeline),
-        Statement.countDocuments({ isDeleted: { $ne: true } }),
+        Statement.countDocuments(baseMatch),
     ]);
 
     const logs = logsRaw.map((doc) => ({
         _id: doc._id,
+        contactId: doc.contactId ?? null,
         invoiceIssueDate: doc.dateOnFile,
         addedAt: doc.createdAt,
         file: doc.file,
@@ -258,6 +263,36 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
     }));
 
     res.status(200).json({ success: true, logs, pages: Math.max(1, Math.ceil(total / LIMIT)) });
+});
+
+/**
+ * GET /api/v2/supplier-logs/statement-contact-ids
+ * Returns distinct contact ids that have at least one statement (with invoices), plus supplier name. Used by Tab 4 to fetch statements per supplier from DB by contact id.
+ */
+exports.getStatementContactIds = tryCatchAsync(async (req, res) => {
+    const pipeline = [
+        { $match: { isDeleted: { $ne: true } } },
+        { $group: { _id: "$contactId" } },
+        { $match: { _id: { $ne: null, $ne: "" } } },
+        {
+            $lookup: {
+                from: "vendors-2.0",
+                let: { contactId: "$_id" },
+                pipeline: [
+                    { $match: { $expr: { $eq: ["$xeroId", "$$contactId"] } } },
+                    { $limit: 1 },
+                    { $project: { name: 1 } },
+                ],
+                as: "v",
+            },
+        },
+        { $addFields: { supplierName: { $ifNull: [{ $arrayElemAt: ["$v.name", 0] }, "Unknown Supplier"] } } },
+        { $sort: { supplierName: 1 } },
+        { $project: { contactId: "$_id", supplierName: 1, _id: 0 } },
+    ];
+    const list = await Statement.aggregate(pipeline);
+    const contactIds = list.map((d) => ({ contactId: d.contactId, supplierName: d.supplierName }));
+    res.status(200).json({ success: true, contactIds });
 });
 
 /**

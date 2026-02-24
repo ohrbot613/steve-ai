@@ -10,5 +10,6 @@ router.get("/dashboard-tab-3", dashboardController.getDashboardTab3);
 router.post("/mark-invoices-paid", dashboardController.markInvoicesPaid);
 router.post("/undo-mark-invoices-paid", dashboardController.undoMarkInvoicesPaid);
 router.get("/xero-sync-status", dashboardController.getXeroSyncStatus);
+router.delete("/invoices/:id", dashboardController.hardDeleteInvoice);
 
 module.exports = router;
