@@ -5,6 +5,7 @@ const Vendor = require("../modals/vendorModal");
 const Invoice = require("../modals/invoiceModal");
 const Team = require("../modals/teamModal");
 const User = require("../../modals/userModal");
+const XeroSyncState = require("../../modals/xeroSyncStateModal");
 const { logProcess } = require("../controllers/processLogController");
 
 const PAGE_SIZE = 100;
@@ -221,6 +222,9 @@ exports.getAllVenders = tryCatchAsync(async (req, res) => {
                 type: pt.type != null ? String(pt.type).toLowerCase() : null,
             }
             : { day: null, type: null };
+        const supplierCurrency = contact?.defaultCurrency
+            ? String(contact.defaultCurrency).toUpperCase()
+            : "GBP";
 
         const isSupplier = contactIdsWithFileInvoices.has(contact.contactID);
         return {
@@ -233,6 +237,7 @@ exports.getAllVenders = tryCatchAsync(async (req, res) => {
                         modifiedLast: now,
                         paymentTerms,
                         supplier: isSupplier,
+                        currency: supplierCurrency,
                     },
                     $setOnInsert: {
                         createdAt: now,
@@ -522,19 +527,21 @@ exports.getAllInvoices = tryCatchAsync(async (req, res) => {
 /**
  * Fire-and-forget: if team.updateInXeroInProgress is false and team.lastXeroLookup is older than 30 min, fetch invoices from Xero modified since then and upsert to DB. Call with req (must have req.user, req.xeroAccessToken, req.xeroTenantId). Uses team.updateInXeroInProgress so only one sync runs per tenant (works across processes).
  */
-exports.syncIncrementalInvoicesFromXero = async function syncIncrementalInvoicesFromXero(req) {
+exports.syncIncrementalInvoicesFromXero = async function syncIncrementalInvoicesFromXero(req, options = {}) {
+    const force = Boolean(options?.force);
     const teamTenantId = req.user?.tenant != null ? String(req.user.tenant) : null;
-    if (!teamTenantId) return;
+    if (!teamTenantId) return { success: false, skipped: true, reason: "no_tenant" };
     const team = await Team.findOne({ tenantId: teamTenantId }).lean();
-    if (!team) return;
-console.log(team.updateInXeroInProgress)
-    if (team.updateInXeroInProgress) return;
+    if (!team) return { success: false, skipped: true, reason: "team_not_found" };
+console.log('team.updateInXeroInProgress', team.updateInXeroInProgress)
+    if (team.updateInXeroInProgress) return { success: false, skipped: true, reason: "in_progress" };
 
     const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
     const lastLookupMs = team.lastXeroLookup ? new Date(team.lastXeroLookup).getTime() : 0;
     const isWithinLast30Min = lastLookupMs >= thirtyMinAgo;
-
-    if (isWithinLast30Min || !req.xeroAccessToken || !req.xeroTenantId) return;
+console.log('isWithinLast30Min', isWithinLast30Min)
+    if (!force && isWithinLast30Min) return { success: true, skipped: true, reason: "within_30_min" };
+    if (!req.xeroAccessToken || !req.xeroTenantId) return { success: false, skipped: true, reason: "missing_xero_auth" };
 
     await Team.updateOne({ tenantId: teamTenantId }, { $set: { updateInXeroInProgress: true } });
     try {
@@ -583,7 +590,7 @@ console.log(team.updateInXeroInProgress)
                     await sleep(retryAfterSec * 1000);
                 } else {
                     console.error("[API 2.0] incremental invoice fetch error:", err?.message || err);
-                    return;
+                    throw err;
                 }
             }
         }
@@ -631,7 +638,14 @@ console.log(team.updateInXeroInProgress)
         console.log("[API 2.0] incremental sync: upserted", allInvoices.length, "invoice(s) from Xero since", ifModifiedSince.toISOString());
     }
 
-    await Team.updateOne({ tenantId: teamTenantId }, { $set: { lastXeroLookup: new Date() } });
+    const now = new Date();
+    await Team.updateOne({ tenantId: teamTenantId }, { $set: { lastXeroLookup: now } });
+    await XeroSyncState.findOneAndUpdate(
+        {},
+        { $set: { lastPolledAt: now, lastSuccessAt: now, modifiedLast: now } },
+        { upsert: true }
+    );
+    return { success: true, skipped: false, syncedCount: allInvoices.length, lastSyncedAt: now };
     } finally {
         await Team.updateOne({ tenantId: teamTenantId }, { $set: { updateInXeroInProgress: false } });
     }

@@ -16,6 +16,11 @@ router.post(
     invoiceController.completeInvoiceFileUpload
 );
 
+router.post(
+    "/continue-unresolved-upload",
+    invoiceController.continueUnresolvedInvoiceUpload
+);
+
 // Batch: multiple files, one activity log with s- / i- prefixed ids
 router.post(
     "/batch-invoice-file-upload",

@@ -478,7 +478,11 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
         throw new Error("Unable to determine file type");
     }
 
+    const fileTitleHint = fileName
+        ? `File name: "${String(fileName).slice(0, 180)}" use the file name as an additional context when identifying company names. `
+        : "";
     const prompt =
+        fileTitleHint +
         "From this document (invoice, statement, or spreadsheet), identify the top 3 most likely company names (sender, recipient, vendor, client, business names). " +
         "Reply with a JSON array of exactly 3 objects, each with keys \"name\" (string) and \"confidence\" (number 0 to 1). Order by confidence descending. " +
         "Example: [{\"name\": \"ACME Inc\", \"confidence\": 0.95}, {\"name\": \"Client Co\", \"confidence\": 0.8}, {\"name\": \"\", \"confidence\": 0}]. If fewer than 3, use empty string and 0 for the rest.";
@@ -535,6 +539,21 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
         const match = cleaned.match(/\[[\s\S]*\]/);
         parsed = match ? JSON.parse(match[0]) : [];
     }
+    const fileNameCompact = String(fileName || "")
+        .toLowerCase()
+        .replace(/\.[a-z0-9]+$/i, "")
+        .replace(/[^a-z0-9]+/g, "");
+    const normalizeNameForFileMatch = (value) => String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "");
+    const filenameMatchBoost = (companyName) => {
+        const normalized = normalizeNameForFileMatch(companyName);
+        if (!fileNameCompact || normalized.length < 3) return 0;
+        if (fileNameCompact.includes(normalized)) return 0.2;
+        if (normalized.includes(fileNameCompact) && fileNameCompact.length >= 4) return 0.12;
+        return 0;
+    };
+
     const list = Array.isArray(parsed)
         ? parsed
               .filter((x) => x && typeof x === "object")
@@ -542,9 +561,22 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
                   name: typeof x.name === "string" ? x.name.trim() : "",
                   confidence: typeof x.confidence === "number" ? Math.max(0, Math.min(1, x.confidence)) : 0,
               }))
-              .slice(0, 3)
         : [];
-    while (list.length < 3) list.push({ name: "", confidence: 0 });
+    const rerankedList = list
+        .map((entry) => {
+            const boost = filenameMatchBoost(entry.name);
+            return {
+                ...entry,
+                filenameBoost: boost,
+                adjustedConfidence: Math.max(0, Math.min(1, entry.confidence + boost)),
+            };
+        })
+        .sort((a, b) => {
+            if (b.adjustedConfidence !== a.adjustedConfidence) return b.adjustedConfidence - a.adjustedConfidence;
+            return b.confidence - a.confidence;
+        })
+        .slice(0, 3);
+    while (rerankedList.length < 3) rerankedList.push({ name: "", confidence: 0, filenameBoost: 0, adjustedConfidence: 0 });
     // Ensure no two items have the same confidence (weight)
     const used = new Set();
     const nextUniqueConfidence = (c) => {
@@ -555,9 +587,9 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
         used.add(val);
         return val;
     };
-    const companyNames = list.slice(0, 3).map((entry) => ({
+    const companyNames = rerankedList.slice(0, 3).map((entry) => ({
         name: entry.name,
-        confidence: nextUniqueConfidence(entry.confidence),
+        confidence: nextUniqueConfidence(entry.adjustedConfidence),
     }));
     console.log(PARSE_FILE_LOG, "getCompaniesFromFile DATA", { fileName: fileName || "(unnamed)", companyNames });
     console.log(PARSE_FILE_LOG, "getCompaniesFromFile OUTCOME", { success: true, companyNames });

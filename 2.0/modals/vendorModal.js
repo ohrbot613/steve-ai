@@ -50,6 +50,10 @@ const vendorSchema = new mongoose.Schema(
                 default: null
             },
         },
+        currency: {
+            type: String,
+            default: "unknown"
+        },
         contactedAt: {
             type: [
                 {

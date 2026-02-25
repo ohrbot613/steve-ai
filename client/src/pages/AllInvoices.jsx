@@ -121,10 +121,6 @@ export default function AllInvoices() {
 
     async function handleDeleteInvoice(invoiceId, e) {
         e.stopPropagation(); // Prevent row click event
-        
-        if (!window.confirm('Are you sure you want to delete this invoice? This action cannot be undone.')) {
-            return;
-        }
 
         try {
             const response = await fetch(`${API_BASE}/invoices/${invoiceId}`, {

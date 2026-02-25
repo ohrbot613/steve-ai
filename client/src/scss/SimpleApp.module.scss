@@ -1288,8 +1288,9 @@ $simple-border: #1A1D28;
   font-size: 11px;
   font-weight: 700;
   border-radius: 999px;
-  background-color: #991B1B;
-  color: #FECACA;
+  background-color: rgba(239, 68, 68, 0.22);
+  color: #FCA5A5;
+  border: 1px solid rgba(239, 68, 68, 0.45);
 }
 
 .issuePillMissingFromFile {
@@ -1298,8 +1299,9 @@ $simple-border: #1A1D28;
   font-size: 11px;
   font-weight: 700;
   border-radius: 999px;
-  background-color: #DC2626;
-  color: #FEE2E2;
+  background-color: rgba(56, 189, 248, 0.22);
+  color: #BAE6FD;
+  border: 1px solid rgba(56, 189, 248, 0.45);
 }
 
 .issuePillMismatch {
@@ -1308,8 +1310,9 @@ $simple-border: #1A1D28;
   font-size: 11px;
   font-weight: 700;
   border-radius: 999px;
-  background-color: #B45309;
-  color: #FEF3C7;
+  background-color: rgba(245, 158, 11, 0.22);
+  color: #FCD34D;
+  border: 1px solid rgba(245, 158, 11, 0.45);
 }
 
 .issuePillMatched {
@@ -1419,6 +1422,107 @@ $simple-border: #1A1D28;
   .statusAwaiting & { background-color: #FB923C; }
 }
 
+.statusIssueDots {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background-color: rgba(139, 92, 246, 0.14);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+}
+
+.statusIssueDotWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  outline: none;
+
+  &:focus-visible {
+    box-shadow: 0 0 0 2px rgba(165, 180, 252, 0.55);
+  }
+
+  &::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 8px);
+    transform: translateX(-50%);
+    background: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 6px 8px;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.14s ease;
+    z-index: 5;
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 2px);
+    transform: translateX(-50%);
+    width: 8px;
+    height: 8px;
+    background: #0f172a;
+    border-right: 1px solid #334155;
+    border-bottom: 1px solid #334155;
+    rotate: 45deg;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.14s ease;
+    z-index: 5;
+  }
+
+  &:hover::after,
+  &:hover::before,
+  &:focus-visible::after,
+  &:focus-visible::before {
+    opacity: 1;
+  }
+}
+
+.statusIssueDot {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  color: #0b1220;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.35), 0 0 10px rgba(0, 0, 0, 0.22);
+}
+
+.statusIssueDotMismatch {
+  background: #f59e0b;
+  color: #111827;
+}
+
+.statusIssueDotMissingXero {
+  background: #ef4444;
+  color: #fff;
+}
+
+.statusIssueDotMissingFile {
+  background: #38bdf8;
+  color: #082f49;
+}
+
 
 .totalsBar {
   display: flex;
@@ -1468,6 +1572,36 @@ $simple-border: #1A1D28;
   }
   .totalsValueUnit {
     margin-left: 0.35em;
+  }
+}
+
+.syncNowWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.syncNowBtn {
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  border-radius: 999px;
+  border: 1px solid #374151;
+  background: rgba(31, 41, 55, 0.85);
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+
+  &:hover:not(:disabled) {
+    background: rgba(55, 65, 81, 0.95);
+    border-color: #4b5563;
+    color: #f1f5f9;
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 }
 
@@ -1531,6 +1665,110 @@ $simple-border: #1A1D28;
   animation: messagePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
   display: inline-flex;
   align-items: center;
+}
+
+.manualSupplierOverlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  padding: 16px;
+}
+
+.manualSupplierBox {
+  background-color: #1A1D28;
+  border: 1px solid $simple-border;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 520px;
+  width: 100%;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+}
+
+.manualSupplierTitle {
+  margin: 0 0 12px 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #E2E8F0;
+}
+
+.manualSupplierText {
+  margin: 0 0 10px 0;
+  color: #CBD5E1;
+  font-size: 14px;
+}
+
+.manualSupplierHint {
+  margin: 0 0 12px 0;
+  color: #94A3B8;
+  font-size: 13px;
+}
+
+.manualSupplierInputLabel {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #E2E8F0;
+}
+
+.manualSupplierInput {
+  width: 100%;
+  border: 2px solid #60A5FA;
+  border-radius: 8px;
+  background-color: rgba(15, 23, 42, 0.92);
+  color: #E2E8F0;
+  padding: 12px 14px;
+  font-size: 15px;
+  margin-top: 6px;
+
+  &::placeholder {
+    color: #94A3B8;
+  }
+
+  &:focus {
+    outline: none;
+    border-color: #93C5FD;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.25);
+  }
+}
+
+.manualSupplierActions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.manualSupplierPrimary {
+  border: none;
+  border-radius: 8px;
+  background-color: #4ADE80;
+  color: #0F172A;
+  font-weight: 700;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+.manualSupplierSecondary {
+  border: 1px solid $simple-border;
+  border-radius: 8px;
+  background-color: transparent;
+  color: #E2E8F0;
+  font-weight: 600;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+.manualSupplierQueueInfo {
+  margin-top: 12px;
+  color: #94A3B8;
+  font-size: 12px;
 }
 
 // Email supplier modal (dashboard 2.0)

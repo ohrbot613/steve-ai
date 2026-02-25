@@ -34,6 +34,13 @@ function formatTableAmount(amount) {
   }).format(amount);
 }
 
+function formatCurrencyTableAmount(currency, amount) {
+  const formatted = formatTableAmount(amount);
+  if (formatted === "—") return formatted;
+  const curr = (currency && String(currency).toUpperCase()) || "GBP";
+  return `${curr} ${formatted}`;
+}
+
 /**
  * Returns { text } for "Never synced" / "Just now", or { num, unit } for "5 min ago" etc.
  * Used so the number and unit can be rendered in separate spans with a guaranteed gap.
@@ -71,16 +78,28 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
       return summary.map((row) => {
         const rawStatus = row.status ?? "Action Needed";
         const status = rawStatus === "No action needed" ? "Reconciled" : rawStatus;
+        const invoicesNeedAttention = Array.isArray(row.invoicesNeedAttention) ? row.invoicesNeedAttention : [];
+        const latestIssueCounts = invoicesNeedAttention.reduce(
+          (acc, inv) => {
+            if (inv?.issue === "AMOUNT MISMATCH") acc.amountMismatch += 1;
+            if (inv?.issue === "MISSING FROM XERO") acc.missingFromXero += 1;
+            if (inv?.issue === "MISSING FROM FILE") acc.missingFromFile += 1;
+            return acc;
+          },
+          { amountMismatch: 0, missingFromXero: 0, missingFromFile: 0 }
+        );
         return {
           supplier: row.supplier,
           contactId: row.contactId,
           theySay: row.theySay,
           xeroSays: row.xeroSays,
+          supplierCurrency: row.supplierCurrency ?? "GBP",
           unpaid: row.unpaid ?? 0,
           paidCount: row.paidCount ?? 0,
           issues: row.issues ?? 0,
           status,
-          invoicesNeedAttention: Array.isArray(row.invoicesNeedAttention) ? row.invoicesNeedAttention : [],
+          statusIssueCounts: latestIssueCounts,
+          invoicesNeedAttention,
           invoicesViewAll: Array.isArray(row.invoicesViewAll) ? row.invoicesViewAll : [],
         };
       });
@@ -102,14 +121,30 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
         const pairsAmountMismatch = allPairs.filter((p) => p.label === "amount mismatch");
         const unpairedInvoices = (s.unpairedInvoices || []).filter((u) => !isPaid(u));
         const issues = pairsAmountMismatch.length + unpairedInvoices.length;
+        const hasAmountMismatch = pairsAmountMismatch.length > 0;
+        const hasMissingFromXero = unpairedInvoices.some((u) => u.fromXero === false);
+        const hasMissingFromFile = unpairedInvoices.some((u) => u.fromXero === true);
+        const statusParts = [
+          hasAmountMismatch ? "AMOUNT MISMATCH" : null,
+          hasMissingFromXero ? "MISSING FROM XERO" : null,
+          hasMissingFromFile ? "MISSING FROM FILE" : null,
+        ].filter(Boolean);
+        const statusIssueCounts = {
+          amountMismatch: pairsAmountMismatch.length,
+          missingFromXero: unpairedInvoices.filter((u) => u.fromXero === false).length,
+          missingFromFile: unpairedInvoices.filter((u) => u.fromXero === true).length,
+        };
         return {
           supplier: s.supplier,
           contactId: s.contactId,
           theySay,
           xeroSays,
+          supplierCurrency: s.supplierCurrency ?? "GBP",
           unpaid: (s.invoices || []).length,
           issues,
-          status: "Unpaid",
+          status: statusParts.length > 0 ? statusParts.join(" • ") : "Unpaid",
+          statusIssueKinds: statusParts,
+          statusIssueCounts,
           pairs: pairsAmountMismatch,
           unpairedInvoices,
         };
@@ -121,20 +156,43 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
   if (tab === "reconciled") {
     const bySupplier = tab3Data?.bySupplier;
     if (Array.isArray(bySupplier) && bySupplier.length > 0) {
-      return bySupplier.map((s) => ({
-        supplier: s.supplier,
-        contactId: s.contactId,
-        amountGBP: s.amountGBP ?? s.theySay ?? 0,
-        pairCount: s.pairCount ?? (s.pairs?.length ?? 0),
-        pairsOverdue: s.pairsOverdue ?? 0,
-        theySay: s.theySay ?? s.amountGBP ?? 0,
-        xeroSays: s.xeroSays ?? s.amountGBP ?? 0,
-        difference: s.difference ?? 0,
-        unpaid: s.pairCount ?? s.unpaid ?? 0,
-        issues: 0,
-        status: "Reconciled",
-        pairs: s.pairs || [],
-      }));
+      return bySupplier.map((s) => {
+        const pairs = s.pairs || [];
+        const supplierCurrency =
+          s.supplierCurrency ??
+          pairs.find((p) => p?.fileInvoice?.currency)?.fileInvoice?.currency ??
+          pairs.find((p) => p?.xeroInvoice?.currency)?.xeroInvoice?.currency ??
+          "GBP";
+        const amountOriginal =
+          s.amountOriginal ??
+          pairs.reduce((sum, p) => {
+            const fileAmt = p?.fileInvoice?.amount;
+            const xeroAmt = p?.xeroInvoice?.amount;
+            const amount =
+              fileAmt != null
+                ? Number(fileAmt)
+                : xeroAmt != null
+                  ? Number(xeroAmt)
+                  : Number(p?.fileAmountGBP) || 0;
+            return sum + (Number.isFinite(amount) ? amount : 0);
+          }, 0);
+        const amountRounded = Math.round(amountOriginal * 100) / 100;
+        return {
+          supplier: s.supplier,
+          contactId: s.contactId,
+          supplierCurrency,
+          amountGBP: amountRounded,
+          pairCount: s.pairCount ?? pairs.length,
+          pairsOverdue: s.pairsOverdue ?? 0,
+          theySay: amountRounded,
+          xeroSays: amountRounded,
+          difference: s.difference ?? 0,
+          unpaid: s.pairCount ?? s.unpaid ?? 0,
+          issues: 0,
+          status: "Reconciled",
+          pairs,
+        };
+      });
     }
     return [];
   }
@@ -294,6 +352,11 @@ export default function SimpleApp() {
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [manualSupplierQueue, setManualSupplierQueue] = useState([]);
+  const [manualSupplierInput, setManualSupplierInput] = useState("");
+  const [manualSupplierSubmitting, setManualSupplierSubmitting] = useState(false);
+  const [manualSupplierError, setManualSupplierError] = useState("");
+  const [manualSupplierVisible, setManualSupplierVisible] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
   const [activeTab, setActiveTab] = useState("attention");
@@ -312,6 +375,7 @@ export default function SimpleApp() {
   const [statementsLoading, setStatementsLoading] = useState(false);
   const [statementsError, setStatementsError] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [syncNowLoading, setSyncNowLoading] = useState(false);
   const statementsWithInvoices = useMemo(
     () => statementsList.filter((log) => (log.total ?? 0) >= 1),
     [statementsList]
@@ -388,7 +452,17 @@ export default function SimpleApp() {
               due.setHours(0, 0, 0, 0);
               return due.getTime() < todayStart.getTime();
             }).length;
-            const amountGBP = pairs.reduce((sum, p) => sum + (p.fileAmountGBP ?? Number(p.fileInvoice?.amount) ?? 0), 0);
+            const amountGBP = pairs.reduce((sum, p) => {
+              const fileAmt = p?.fileInvoice?.amount;
+              const xeroAmt = p?.xeroInvoice?.amount;
+              const amount =
+                fileAmt != null
+                  ? Number(fileAmt)
+                  : xeroAmt != null
+                    ? Number(xeroAmt)
+                    : Number(p?.fileAmountGBP) || 0;
+              return sum + (Number.isFinite(amount) ? amount : 0);
+            }, 0);
             const amountGBPRounded = Math.round(amountGBP * 100) / 100;
             return {
               ...row,
@@ -503,6 +577,15 @@ export default function SimpleApp() {
   };
 
   const [emailModalRow, setEmailModalRow] = useState(null);
+  const currentManualSupplierItem = manualSupplierQueue[0] ?? null;
+  useEffect(() => {
+    if (!currentManualSupplierItem || !manualSupplierVisible) return;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape" && !manualSupplierSubmitting) handleManualSupplierCancel();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [currentManualSupplierItem, manualSupplierSubmitting, manualSupplierVisible]);
   useEffect(() => {
     if (emailModalRow == null) return;
     const onKeyDown = (e) => { if (e.key === "Escape") setEmailModalRow(null); };
@@ -663,14 +746,40 @@ export default function SimpleApp() {
     return () => window.removeEventListener("simple-app-open-upload", openPicker);
   }, []);
 
-  useEffect(() => {
-    fetch('/api/v2/dashboard/xero-sync-status', { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => {
-        if (data?.lastSyncedAt) setLastSyncedAt(new Date(data.lastSyncedAt));
-      })
-      .catch(() => {}); // Silent on error — non-critical indicator
+  const refreshXeroSyncStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v2/dashboard/xero-sync-status", { credentials: "include" });
+      const data = await res.json();
+      if (data?.lastSyncedAt) setLastSyncedAt(new Date(data.lastSyncedAt));
+      else setLastSyncedAt(null);
+    } catch (_) {
+      // Silent on error — non-critical indicator
+    }
   }, []);
+
+  useEffect(() => {
+    refreshXeroSyncStatus();
+  }, [refreshXeroSyncStatus]);
+
+  const handleSyncNow = useCallback(async () => {
+    setSyncNowLoading(true);
+    try {
+      const res = await fetch("/api/v2/dashboard/xero-sync-now", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to sync with Xero");
+      }
+      if (data?.lastSyncedAt) setLastSyncedAt(new Date(data.lastSyncedAt));
+      await Promise.all([refetchDashboardData(), refetchTab2(), refetchTab3(), refreshXeroSyncStatus()]);
+    } catch (err) {
+      alert(err.message || "Failed to sync with Xero");
+    } finally {
+      setSyncNowLoading(false);
+    }
+  }, [refetchDashboardData, refetchTab2, refetchTab3, refreshXeroSyncStatus]);
 
   useEffect(() => {
     window.dispatchEvent(
@@ -994,6 +1103,93 @@ export default function SimpleApp() {
     return "The upload failed. Please try again.";
   }
 
+  function queueUnresolvedUploads(items) {
+    const list = (items || []).filter((item) => item?.unresolvedUpload);
+    if (list.length === 0) return;
+    setManualSupplierQueue((prev) => {
+      const next = [...prev, ...list];
+      if (prev.length === 0) {
+        const firstGuess = list[0]?.candidateSuppliers?.[0]?.name || "";
+        setManualSupplierInput(firstGuess);
+        setManualSupplierError("");
+        setManualSupplierVisible(true);
+      }
+      return next;
+    });
+  }
+
+  function popManualSupplierQueue(showNextPrompt = true) {
+    setManualSupplierQueue((prev) => {
+      const next = prev.slice(1);
+      const nextGuess = next[0]?.candidateSuppliers?.[0]?.name || "";
+      setManualSupplierInput(nextGuess);
+      setManualSupplierError("");
+      if (next.length > 0 && showNextPrompt) {
+        setTimeout(() => setManualSupplierVisible(true), 160);
+      }
+      return next;
+    });
+  }
+
+  async function handleManualSupplierContinue() {
+    const current = manualSupplierQueue[0];
+    if (!current?.unresolvedUpload) return;
+    const supplierName = manualSupplierInput.trim();
+    if (!supplierName) {
+      setManualSupplierError("Please enter a supplier name.");
+      return;
+    }
+    setManualSupplierSubmitting(true);
+    setManualSupplierError("");
+    setManualSupplierVisible(false);
+    try {
+      const res = await fetch("/api/v2/invoice/continue-unresolved-upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          supplierName,
+          unresolvedUpload: current.unresolvedUpload,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setManualSupplierError(
+          data?.message ||
+            "We couldn't continue this file. Please add/sync the supplier first."
+        );
+        return;
+      }
+      setUploadSuccess((prev) => {
+        const fileLabel = current.fileName || current.unresolvedUpload?.fileName || "File";
+        const createdCount = data.createdCount ?? (data.created?.length ?? 0);
+        const currentLine = `${fileLabel} continued.${createdCount > 0 ? ` ${createdCount} invoice(s) saved.` : ""}`;
+        return prev ? `${prev} ${currentLine}` : currentLine;
+      });
+      popManualSupplierQueue(true);
+      refetchDashboardData();
+      refetchTab2();
+      refetchTab3();
+    } catch (err) {
+      setManualSupplierError(getUploadErrorMessage(err?.message, "network"));
+      setManualSupplierVisible(true);
+    } finally {
+      setManualSupplierSubmitting(false);
+    }
+  }
+
+  function handleManualSupplierSkip() {
+    setManualSupplierVisible(false);
+    popManualSupplierQueue(true);
+  }
+
+  function handleManualSupplierCancel() {
+    setManualSupplierVisible(false);
+    setManualSupplierQueue([]);
+    setManualSupplierInput("");
+    setManualSupplierError("");
+  }
+
   async function handleFileUpload(files) {
     if (!files?.length) return;
     const fileArray = Array.from(files);
@@ -1010,6 +1206,10 @@ export default function SimpleApp() {
     setUploadLoading(true);
     setUploadError("");
     setUploadSuccess("");
+    setManualSupplierQueue([]);
+    setManualSupplierInput("");
+    setManualSupplierError("");
+    setManualSupplierVisible(false);
     try {
       if (fileArray.length > 1) {
         const formData = new FormData();
@@ -1021,25 +1221,50 @@ export default function SimpleApp() {
         });
         const data = await response.json();
         if (!response.ok) {
+          if (data?.status === "needs_supplier_input" && data?.unresolvedUpload) {
+            queueUnresolvedUploads([{
+              fileName: data.fileName || fileArray[0]?.name || "File",
+              candidateSuppliers: data.candidateSuppliers || [],
+              unresolvedUpload: data.unresolvedUpload,
+            }]);
+            setUploadError("");
+            return;
+          }
           setUploadError(getUploadErrorMessage(data?.message, "batch"));
           return;
         }
         const errors = data.errors || [];
+        const unresolvedErrors = errors.filter((e) => e?.status === "needs_supplier_input" && e?.unresolvedUpload);
+        const failedErrors = errors.filter((e) => e?.status !== "needs_supplier_input");
         const count = (data.results || []).length;
         const totalCreated = (data.results || []).reduce((s, r) => s + (r.createdCount ?? 0), 0);
+        if (unresolvedErrors.length > 0) {
+          queueUnresolvedUploads(unresolvedErrors.map((entry) => ({
+            fileName: entry.fileName,
+            candidateSuppliers: entry.candidateSuppliers || [],
+            unresolvedUpload: entry.unresolvedUpload,
+          })));
+        }
         if (errors.length > 0) {
           const allFailed = count === 0;
           if (allFailed) {
             setUploadError(
-              "Upload failed. We couldn't process any of the files. Please check that each file is a valid PDF or Excel and that we can identify the supplier."
+              unresolvedErrors.length > 0
+                ? `${unresolvedErrors.length} file(s) need supplier name input before they can continue.`
+                : "Upload failed. We couldn't process any of the files. Please check that each file is a valid PDF or Excel and that we can identify the supplier."
             );
           } else {
             setUploadSuccess(
               `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
             );
-            setUploadError(
-              `${errors.length} file(s) couldn't be processed. Please check that those files are valid and that we can identify the supplier.`
-            );
+            const genericErrorCount = failedErrors.length;
+            const unresolvedCount = unresolvedErrors.length;
+            if (genericErrorCount > 0 || unresolvedCount > 0) {
+              const parts = [];
+              if (unresolvedCount > 0) parts.push(`${unresolvedCount} file(s) need supplier name input`);
+              if (genericErrorCount > 0) parts.push(`${genericErrorCount} file(s) couldn't be processed`);
+              setUploadError(`${parts.join(". ")}.`);
+            }
           }
         } else {
           setUploadSuccess(
@@ -1069,6 +1294,15 @@ export default function SimpleApp() {
         });
         const data = await response.json();
         if (!response.ok) {
+          if (data?.status === "needs_supplier_input" && data?.unresolvedUpload) {
+            queueUnresolvedUploads([{
+              fileName: data.fileName || fileArray[0]?.name || "File",
+              candidateSuppliers: data.candidateSuppliers || [],
+              unresolvedUpload: data.unresolvedUpload,
+            }]);
+            setUploadError("");
+            return;
+          }
           setUploadError(getUploadErrorMessage(data?.message));
           return;
         }
@@ -1286,17 +1520,27 @@ export default function SimpleApp() {
           ))}
           <div className={`${styles.totalsCell} ${styles.totalsCellSync}`}>
             <span className={styles.totalsLabel}>Last synced with Xero</span>
-            <span className={styles.totalsValue}>
-              {(() => {
-                const sync = formatLastSynced(lastSyncedAt);
-                if (sync.text) return sync.text;
-                return (
-                  <>&nbsp;
-                    <span>{sync.num}</span>
-                    <span className={styles.totalsValueUnit}>{sync.unit}</span>
-                  </>
-                );
-              })()}
+            <span className={styles.syncNowWrap}>
+              <span className={styles.totalsValue}>
+                {(() => {
+                  const sync = formatLastSynced(lastSyncedAt);
+                  if (sync.text) return sync.text;
+                  return (
+                    <>&nbsp;
+                      <span>{sync.num}</span>
+                      <span className={styles.totalsValueUnit}>{sync.unit}</span>
+                    </>
+                  );
+                })()}
+              </span>
+              <button
+                type="button"
+                className={styles.syncNowBtn}
+                onClick={handleSyncNow}
+                disabled={syncNowLoading}
+              >
+                {syncNowLoading ? "Syncing..." : "Refresh"}
+              </button>
             </span>
           </div>
           </div>
@@ -1518,20 +1762,40 @@ export default function SimpleApp() {
                     {(activeTab === "reconciled"
                       ? [
                           ["supplier", "SUPPLIER NAME"],
-                          ["amountGBP", "AMOUNT (£)"],
+                          ["amountGBP", "AMOUNT (SUPPLIER CURRENCY)"],
                           ["pairCount", "PAIRS"],
                           ["pairsOverdue", "PAIRS OVERDUE"],
                           ["status", "STATUS"],
                         ]
-                      : [
-                          ["supplier", "SUPPLIER NAME"],
-                          ["theySay", "THEY SAY WE OWE (£)"],
-                          ["xeroSays", "XERO SAYS WE OWE (£)"],
-                          ["difference", "DIFFERENCE (£)"],
-                          ["unpaid", "UNPAID"],
-                          ["issues", "ISSUES"],
-                          ["status", "STATUS"],
-                        ]
+                      : activeTab === "latest"
+                        ? [
+                            ["supplier", "SUPPLIER NAME"],
+                            ["theySay", "THEY SAY WE OWE (SUPPLIER CURRENCY)"],
+                            ["xeroSays", "XERO SAYS WE OWE (SUPPLIER CURRENCY)"],
+                            ["difference", "DIFFERENCE (SUPPLIER CURRENCY)"],
+                            ["unpaid", "UNPAID"],
+                            ["issues", "ISSUES"],
+                            ["status", "STATUS"],
+                          ]
+                        : activeTab === "attention"
+                          ? [
+                              ["supplier", "SUPPLIER NAME"],
+                              ["theySay", "THEY SAY WE OWE (SUPPLIER CURRENCY)"],
+                              ["xeroSays", "XERO SAYS WE OWE (SUPPLIER CURRENCY)"],
+                              ["difference", "DIFFERENCE (SUPPLIER CURRENCY)"],
+                              ["unpaid", "UNPAID"],
+                              ["issues", "ISSUES"],
+                              ["status", "STATUS"],
+                            ]
+                        : [
+                            ["supplier", "SUPPLIER NAME"],
+                            ["theySay", "THEY SAY WE OWE (£)"],
+                            ["xeroSays", "XERO SAYS WE OWE (£)"],
+                            ["difference", "DIFFERENCE (£)"],
+                            ["unpaid", "UNPAID"],
+                            ["issues", "ISSUES"],
+                            ["status", "STATUS"],
+                          ]
                     ).map(([key, label]) => (
                       <th
                         key={key}
@@ -1566,9 +1830,15 @@ export default function SimpleApp() {
                 <tbody>
                   {paginatedTableData.map((row, i) => {
                     const diff = row.difference ?? row.xeroSays - row.theySay;
-                    const diffFormatted = diff >= 0 ? formatTableAmount(diff) : `-${formatTableAmount(-diff)}`;
+                    const rowSupplierCurrency = (row.supplierCurrency && String(row.supplierCurrency).toUpperCase()) || "GBP";
+                    const showSupplierCurrencyTotals = activeTab === "latest" || activeTab === "attention";
+                    const diffFormatted = diff >= 0
+                      ? (showSupplierCurrencyTotals ? formatCurrencyTableAmount(rowSupplierCurrency, diff) : formatTableAmount(diff))
+                      : (showSupplierCurrencyTotals ? `-${formatCurrencyTableAmount(rowSupplierCurrency, -diff)}` : `-${formatTableAmount(-diff)}`);
                     const statusClass =
-                      row.status === "Reconciled" || row.status === "Contacted"
+                      activeTab === "attention"
+                        ? styles.statusActionNeeded
+                        : row.status === "Reconciled" || row.status === "Contacted"
                         ? styles.statusReconciled
                         : row.status === "No action needed"
                           ? styles.statusNoActionNeeded
@@ -1732,14 +2002,24 @@ export default function SimpleApp() {
                           </td>
                           {activeTab === "reconciled" ? (
                             <>
-                              <td className={styles.tableTd}>{formatTableAmount(row.amountGBP ?? row.theySay)}</td>
+                              <td className={styles.tableTd}>
+                                {formatCurrencyTableAmount(rowSupplierCurrency, row.amountGBP ?? row.theySay)}
+                              </td>
                               <td className={styles.tableTd}>{row.pairCount ?? row.unpaid}</td>
                               <td className={styles.tableTd}>{row.pairsOverdue ?? 0}</td>
                             </>
                           ) : (
                             <>
-                              <td className={styles.tableTd}>{formatTableAmount(row.theySay)}</td>
-                              <td className={styles.tableTd}>{formatTableAmount(row.xeroSays)}</td>
+                              <td className={styles.tableTd}>
+                                {showSupplierCurrencyTotals
+                                  ? formatCurrencyTableAmount(rowSupplierCurrency, row.theySay)
+                                  : formatTableAmount(row.theySay)}
+                              </td>
+                              <td className={styles.tableTd}>
+                                {showSupplierCurrencyTotals
+                                  ? formatCurrencyTableAmount(rowSupplierCurrency, row.xeroSays)
+                                  : formatTableAmount(row.xeroSays)}
+                              </td>
                               <td className={styles.tableTd}>
                                 <span className={diff < 0 ? styles.diffNegative : styles.diffPositive}>
                                   {diffFormatted}
@@ -1754,10 +2034,58 @@ export default function SimpleApp() {
                             </td>
                           )}
                           <td className={styles.tableTd}>
-                            <span className={`${styles.statusBadge} ${statusClass}`}>
-                              <span className={styles.statusDot} aria-hidden />
-                              {row.status}
-                            </span>
+                            {(activeTab === "latest" || activeTab === "attention") &&
+                            row.statusIssueCounts &&
+                            ((row.statusIssueCounts.amountMismatch ?? 0) > 0 ||
+                              (row.statusIssueCounts.missingFromXero ?? 0) > 0 ||
+                              (row.statusIssueCounts.missingFromFile ?? 0) > 0) ? (
+                              <span
+                                className={styles.statusIssueDots}
+                                aria-label={`Amount mismatch: ${row.statusIssueCounts.amountMismatch ?? 0}, Missing from Xero: ${row.statusIssueCounts.missingFromXero ?? 0}, Missing from file: ${row.statusIssueCounts.missingFromFile ?? 0}`}
+                              >
+                                {(row.statusIssueCounts.amountMismatch ?? 0) > 0 && (
+                                  <span
+                                    className={styles.statusIssueDotWrap}
+                                    data-tooltip={`Amount mismatch (${row.statusIssueCounts.amountMismatch})`}
+                                    tabIndex={0}
+                                    aria-label="Amount mismatch"
+                                  >
+                                    <span className={`${styles.statusIssueDot} ${styles.statusIssueDotMismatch}`} aria-hidden>
+                                      {row.statusIssueCounts.amountMismatch}
+                                    </span>
+                                  </span>
+                                )}
+                                {(row.statusIssueCounts.missingFromXero ?? 0) > 0 && (
+                                  <span
+                                    className={styles.statusIssueDotWrap}
+                                    data-tooltip={`Missing from Xero (${row.statusIssueCounts.missingFromXero})`}
+                                    tabIndex={0}
+                                    aria-label="Missing from Xero"
+                                  >
+                                    <span className={`${styles.statusIssueDot} ${styles.statusIssueDotMissingXero}`} aria-hidden>
+                                      {row.statusIssueCounts.missingFromXero}
+                                    </span>
+                                  </span>
+                                )}
+                                {(row.statusIssueCounts.missingFromFile ?? 0) > 0 && (
+                                  <span
+                                    className={styles.statusIssueDotWrap}
+                                    data-tooltip={`Missing from file (${row.statusIssueCounts.missingFromFile})`}
+                                    tabIndex={0}
+                                    aria-label="Missing from file"
+                                  >
+                                    <span className={`${styles.statusIssueDot} ${styles.statusIssueDotMissingFile}`} aria-hidden>
+                                      {row.statusIssueCounts.missingFromFile}
+                                    </span>
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span className={`${styles.statusBadge} ${statusClass}`}>
+                                <span className={styles.statusDot} aria-hidden />
+                                {row.status}
+                              </span>
+                            )}
                           </td>
                           {activeTab === "attention" && (
                             <td className={styles.tableTd} onClick={(e) => e.stopPropagation()}>
@@ -1819,7 +2147,7 @@ export default function SimpleApp() {
                                     <div className={styles.reconciledCardLeft}>
                                       <h3 className={styles.reconciledCardSupplier}>{row.supplier}</h3>
                                       <p className={styles.reconciledCardSummary}>
-                                        Total owed (one per pair): <strong>£{formatTableAmount(row.amountGBP ?? row.theySay)}</strong>
+                                        Total owed (one per pair): <strong>{formatCurrencyTableAmount(rowSupplierCurrency, row.amountGBP ?? row.theySay)}</strong>
                                         {" · "}
                                         <strong>{row.pairCount ?? row.unpaid} invoices</strong>
                                         {tab3OverdueCount > 0 && (
@@ -1917,7 +2245,7 @@ export default function SimpleApp() {
                                                   </th>
                                                   <th className={styles.detailTh}>INVOICE #</th>
                                                   <th className={styles.detailTh}>DATE</th>
-                                                  <th className={styles.detailTh}>AMOUNT (£)</th>
+                                                  <th className={styles.detailTh}>AMOUNT</th>
                                                   <th className={styles.detailTh} style={{ width: 80 }} />
                                                   <th className={styles.detailTh} style={{ width: 44 }} />
                                                 </tr>
@@ -1970,9 +2298,7 @@ export default function SimpleApp() {
                                                             className={styles.detailDeleteBtn}
                                                             onClick={(e) => {
                                                               e.stopPropagation();
-                                                              if (window.confirm("Permanently delete the file invoice for this row? The Xero invoice will be kept. This cannot be undone.")) {
-                                                                handleHardDeleteInvoice(delId);
-                                                              }
+                                                            handleHardDeleteInvoice(delId);
                                                             }}
                                                             disabled={deletingInvoiceId === delId}
                                                             aria-label={`Delete invoice ${inv.invoiceNumber || j + 1}`}
@@ -2141,7 +2467,11 @@ export default function SimpleApp() {
                                           </td>
                                           <td className={styles.detailTd}>
                                             <span className={styles.supplierOrigAmtCell}>
-                                              <span className={styles.supplierOrigAmtCurrency}>{inv.xeroCurrencyOriginal ?? inv.currency ?? "–"}</span>
+                                              <span className={styles.supplierOrigAmtCurrency}>
+                                                {activeTab === "latest" && inv.xeroAmountOriginal == null && inv.xeroAmt == null
+                                                  ? (inv.supplierCurrencyOriginal ?? inv.currency ?? "–")
+                                                  : (inv.xeroCurrencyOriginal ?? inv.currency ?? "–")}
+                                              </span>
                                               <span className={styles.supplierOrigAmtAmount}>{inv.xeroAmountOriginal != null ? formatTableAmount(inv.xeroAmountOriginal) : inv.xeroAmt != null ? formatTableAmount(inv.xeroAmt) : "–"}</span>
                                             </span>
                                           </td>
@@ -2157,7 +2487,9 @@ export default function SimpleApp() {
                                               </span>
                                             ) : (
                                               <span className={styles.supplierOrigAmtCell}>
-                                                <span className={styles.supplierOrigAmtCurrency}>GBP</span>
+                                                <span className={styles.supplierOrigAmtCurrency}>
+                                                  {inv.supplierCurrencyOriginal ?? inv.xeroCurrencyOriginal ?? inv.currency ?? "GBP"}
+                                                </span>
                                                 <span className={styles.diffNegative}>{formatTableAmount(inv.difference)}</span>
                                               </span>
                                             )}
@@ -2170,9 +2502,7 @@ export default function SimpleApp() {
                                                 className={styles.detailDeleteBtn}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
-                                                  if (window.confirm("Permanently delete this invoice? This cannot be undone.")) {
-                                                    handleHardDeleteInvoice(inv.deleteInvoiceId ?? inv._id);
-                                                  }
+                                                  handleHardDeleteInvoice(inv.deleteInvoiceId ?? inv._id);
                                                 }}
                                                 disabled={deletingInvoiceId === (inv.deleteInvoiceId ?? inv._id)}
                                                 aria-label={`Delete invoice ${inv.invoiceNumber || "row"}`}
@@ -2243,6 +2573,89 @@ export default function SimpleApp() {
         </>
         )}
       </div>
+
+      {currentManualSupplierItem != null && manualSupplierVisible && (
+        <div
+          className={styles.manualSupplierOverlay}
+          onClick={() => {
+            if (!manualSupplierSubmitting) handleManualSupplierCancel();
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="manual-supplier-title"
+        >
+          <div
+            className={styles.manualSupplierBox}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="manual-supplier-title" className={styles.manualSupplierTitle}>
+              Enter supplier name
+            </h2>
+            <p className={styles.manualSupplierText}>
+              We could not confidently identify a supplier for{" "}
+              <strong>{currentManualSupplierItem.fileName || currentManualSupplierItem.unresolvedUpload?.fileName || "this file"}</strong>.
+            </p>
+            {Array.isArray(currentManualSupplierItem.candidateSuppliers) &&
+              currentManualSupplierItem.candidateSuppliers.length > 0 && (
+                <p className={styles.manualSupplierHint}>
+                  Possible matches:{" "}
+                  {currentManualSupplierItem.candidateSuppliers
+                    .slice(0, 3)
+                    .map((s) => s.name)
+                    .filter(Boolean)
+                    .join(", ")}
+                </p>
+              )}
+            <label className={styles.manualSupplierInputLabel} htmlFor="manual-supplier-input">
+              Supplier name
+            </label>
+            <input
+              id="manual-supplier-input"
+              type="text"
+              value={manualSupplierInput}
+              onChange={(e) => setManualSupplierInput(e.target.value)}
+              placeholder="e.g. Acme Ltd"
+              className={styles.manualSupplierInput}
+              disabled={manualSupplierSubmitting}
+              autoFocus
+            />
+            {manualSupplierError && (
+              <p className={styles.uploadError} role="alert">
+                {manualSupplierError}
+              </p>
+            )}
+            <div className={styles.manualSupplierActions}>
+              <button
+                type="button"
+                className={styles.manualSupplierPrimary}
+                onClick={handleManualSupplierContinue}
+                disabled={manualSupplierSubmitting}
+              >
+                {manualSupplierSubmitting ? "Continuing..." : "Continue"}
+              </button>
+              <button
+                type="button"
+                className={styles.manualSupplierSecondary}
+                onClick={handleManualSupplierSkip}
+                disabled={manualSupplierSubmitting}
+              >
+                Skip file
+              </button>
+              <button
+                type="button"
+                className={styles.manualSupplierSecondary}
+                onClick={handleManualSupplierCancel}
+                disabled={manualSupplierSubmitting}
+              >
+                Cancel
+              </button>
+            </div>
+            <p className={styles.manualSupplierQueueInfo}>
+              {manualSupplierQueue.length} unresolved file{manualSupplierQueue.length !== 1 ? "s" : ""} remaining
+            </p>
+          </div>
+        </div>
+      )}
 
       {tab3PaidToast.visible && (
         <div className={styles.paidToast} role="status" aria-live="polite">
