@@ -144,6 +144,7 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
           status: statusParts.length > 0 ? statusParts.join(" • ") : "Unpaid",
           statusIssueKinds: statusParts,
           statusIssueCounts,
+          allPairs,
           pairs: pairsAmountMismatch,
           unpairedInvoices,
         };
@@ -714,12 +715,6 @@ export default function SimpleApp() {
 
   const handleDeleteLatestFileOnlyInvoices = useCallback(async (rowKey, supplierName, invoiceIds) => {
     if (!rowKey || !Array.isArray(invoiceIds) || invoiceIds.length === 0) return;
-    const count = invoiceIds.length;
-    const supplier = supplierName || "this supplier";
-    const confirmed = window.confirm(
-      `Delete ${count} file-only invoice${count !== 1 ? "s" : ""} for ${supplier}? This cannot be undone.`
-    );
-    if (!confirmed) return;
     const rowKeyStr = String(rowKey);
     setDeletingLatestRowKey(rowKeyStr);
     try {
@@ -1986,6 +1981,7 @@ export default function SimpleApp() {
                           )
                         : [];
                     const tab2Pairs = activeTab === "attention" ? (row.pairs || []) : [];
+                    const tab2AllPairs = activeTab === "attention" ? (row.allPairs || []) : [];
                     const tab2Unpaired = activeTab === "attention" ? (row.unpairedInvoices || []) : [];
                     const tab3Pairs = activeTab === "reconciled" ? (row.pairs || []) : [];
                     const todayStart = new Date();
@@ -2088,11 +2084,47 @@ export default function SimpleApp() {
                             }),
                           ]
                         : [];
+                    const attentionMatchedDetailInvoices =
+                      activeTab === "attention"
+                        ? (tab2AllPairs || [])
+                            .filter((p) => p.label === "perfect match")
+                            .map((p) => {
+                              const fa = p.fileAmountGBP != null ? p.fileAmountGBP : (Number(p.fileInvoice?.amount) ?? 0);
+                              const xa = p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(p.xeroInvoice?.amount) ?? 0);
+                              const date = p.xeroInvoice?.dueDate || p.xeroInvoice?.date || p.fileInvoice?.dueDate || p.fileInvoice?.date;
+                              const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
+                              const fileCur = (p.fileInvoice?.currency && String(p.fileInvoice.currency).toUpperCase()) || "GBP";
+                              const xeroCur = (p.xeroInvoice?.currency && String(p.xeroInvoice.currency).toUpperCase()) || "GBP";
+                              const sameCur = fileCur === xeroCur;
+                              const diffOrig = sameCur && p.fileInvoice?.amount != null && p.xeroInvoice?.amount != null
+                                ? Math.round((Number(p.xeroInvoice.amount) - Number(p.fileInvoice.amount)) * 100) / 100
+                                : null;
+                              return {
+                                deleteInvoiceId: p.fileInvoice?._id ? String(p.fileInvoice._id) : null,
+                                invoiceNumber: p.fileInvoice?.invoiceNumber || p.xeroInvoice?.invoiceNumber || "—",
+                                date: dateStr,
+                                currency: p.fileInvoice?.currency ?? p.xeroInvoice?.currency ?? "GBP",
+                                supplierAmountOriginal: p.fileInvoice?.amount != null ? Number(p.fileInvoice.amount) : null,
+                                supplierCurrencyOriginal: p.fileInvoice?.currency ?? "GBP",
+                                xeroAmountOriginal: p.xeroInvoice?.amount != null ? Number(p.xeroInvoice.amount) : null,
+                                xeroCurrencyOriginal: p.xeroInvoice?.currency ?? "GBP",
+                                differenceOriginal: diffOrig,
+                                differenceOriginalCurrency: diffOrig != null ? (p.fileInvoice?.currency ?? "GBP") : null,
+                                issue: "Matched",
+                                supplierAmt: fa,
+                                xeroAmt: xa,
+                                difference: xa - fa,
+                                status: "Reconciled",
+                              };
+                            })
+                        : [];
                     const detailRows =
                       activeTab === "reconciled"
                         ? reconciledDetailInvoices
                         : activeTab === "attention"
-                          ? attentionDetailInvoices
+                          ? (viewAllShownForRow.has(rowKey)
+                              ? [...attentionDetailInvoices, ...attentionMatchedDetailInvoices]
+                              : attentionDetailInvoices)
                           : activeTab === "latest"
                             ? viewAllInvoices
                             : viewAllShownForRow.has(rowKey)
