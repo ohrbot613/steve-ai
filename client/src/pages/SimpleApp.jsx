@@ -61,7 +61,6 @@ const DASHBOARD_DATA_URL = "/api/v2/dashboard/dashboard-data";
 const DASHBOARD_TAB2_URL = "/api/v2/dashboard/dashboard-tab-2";
 const DASHBOARD_TAB3_URL = "/api/v2/dashboard/dashboard-tab-3";
 const ALL_STATEMENTS_URL = "/api/v2/supplier-logs/all-statements";
-const STATEMENT_CONTACT_IDS_URL = "/api/v2/supplier-logs/statement-contact-ids";
 const TAB2_PAGE_SIZE = 50;
 
 const ALLOWED_TYPES = [
@@ -127,7 +126,7 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
         const statusParts = [
           hasAmountMismatch ? "AMOUNT MISMATCH" : null,
           hasMissingFromXero ? "MISSING FROM XERO" : null,
-          hasMissingFromFile ? "MISSING FROM FILE" : null,
+          hasMissingFromFile ? "UNVERIFIED" : null,
         ].filter(Boolean);
         const statusIssueCounts = {
           amountMismatch: pairsAmountMismatch.length,
@@ -377,14 +376,14 @@ export default function SimpleApp() {
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [syncNowLoading, setSyncNowLoading] = useState(false);
   const statementsWithInvoices = useMemo(
-    () => statementsList.filter((log) => (log.total ?? 0) >= 1),
+    () => statementsList.filter((log) => Number(log?.total) > 1),
     [statementsList]
   );
 
   const statementsBySupplier = useMemo(() => {
-    // Include all statements from the list (no filter by total) so every statement in DB for that contact id is shown
+    // Show only statements that have more than 1 invoice.
     const byContactId = {};
-    for (const log of statementsList) {
+    for (const log of statementsWithInvoices) {
       const rawKey = log.contactId ?? log.supplier?.name ?? "";
       const key = typeof rawKey === "string" ? rawKey : String(rawKey || "");
       const bucketKey = key || "unknown";
@@ -403,9 +402,15 @@ export default function SimpleApp() {
       .map((contactKey) => {
         const statements = byContactId[contactKey];
         const supplierName = statements[0]?.supplier?.name ?? contactKey;
-        return { supplierName, contactId: contactKey, statements };
+        const supplierCurrency =
+          statements.find((log) => log?.supplierCurrency)?.supplierCurrency ?? "GBP";
+        const totalAmountOriginal = statements.reduce((sum, log) => {
+          const amount = Number(log?.amountOriginal);
+          return sum + (Number.isFinite(amount) ? amount : 0);
+        }, 0);
+        return { supplierName, contactId: contactKey, statements, supplierCurrency, totalAmountOriginal };
       });
-  }, [statementsList]);
+  }, [statementsWithInvoices]);
 
   const handleSort = (column) => {
     setSortByTab((prev) => {
@@ -497,58 +502,57 @@ export default function SimpleApp() {
     if (activeTab === "attention") setTab2Page(1);
   }, [activeTab]);
 
-  // Fetch statements from DB per supplier by contact id when Statements tab is active
-  useEffect(() => {
-    if (activeTab !== "statements") return;
-    let cancelled = false;
+  const refetchStatementsList = useCallback(async () => {
     setStatementsLoading(true);
     setStatementsError("");
     const sortBy = "processDateTime";
     const sortOrder = "desc";
-    fetch(STATEMENT_CONTACT_IDS_URL, { credentials: "include" })
-      .then((r) => r.json())
-      .then(async (data) => {
-        if (cancelled) return;
-        if (!data.success || !Array.isArray(data.contactIds) || data.contactIds.length === 0) {
-          setStatementsList([]);
-          if (data.success && Array.isArray(data.contactIds) && data.contactIds.length === 0) {
-            setStatementsError("");
-          } else {
-            setStatementsError("Failed to load statements");
-          }
-          return;
-        }
-        const allLogs = [];
-        for (const { contactId, supplierName } of data.contactIds) {
-          if (cancelled) break;
-          let page = 1;
-          let totalPages = 1;
-          do {
-            const res = await fetch(
-              `${ALL_STATEMENTS_URL}?page=${page}&sortBy=${sortBy}&sortOrder=${sortOrder}&contactId=${encodeURIComponent(contactId)}`,
-              { credentials: "include" }
-            );
+    const fast = "1";
+    const limit = 300;
+    try {
+      const firstRes = await fetch(
+        `${ALL_STATEMENTS_URL}?page=1&sortBy=${sortBy}&sortOrder=${sortOrder}&fast=${fast}&limit=${limit}`,
+        { credentials: "include" }
+      );
+      const firstPage = await firstRes.json();
+      if (!firstRes.ok || !firstPage.success || !Array.isArray(firstPage.logs)) {
+        throw new Error("Failed to load statements");
+      }
+      const totalPages = Number(firstPage.pages) > 0 ? Number(firstPage.pages) : 1;
+      if (totalPages <= 1) {
+        setStatementsList(firstPage.logs);
+        return;
+      }
+      const pagePromises = [];
+      for (let page = 2; page <= totalPages; page += 1) {
+        pagePromises.push(
+          fetch(
+            `${ALL_STATEMENTS_URL}?page=${page}&sortBy=${sortBy}&sortOrder=${sortOrder}&fast=${fast}&limit=${limit}`,
+            { credentials: "include" }
+          ).then(async (res) => {
             const pageData = await res.json();
-            if (cancelled) break;
-            if (!pageData.success || !Array.isArray(pageData.logs)) break;
-            allLogs.push(...pageData.logs);
-            totalPages = pageData.pages ?? 1;
-            page++;
-          } while (page <= totalPages && !cancelled);
-        }
-        if (!cancelled) setStatementsList(allLogs);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setStatementsList([]);
-          setStatementsError("Failed to load statements");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setStatementsLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [activeTab]);
+            if (!res.ok || !pageData.success || !Array.isArray(pageData.logs)) {
+              throw new Error("Failed to load statements");
+            }
+            return pageData.logs;
+          })
+        );
+      }
+      const remainingLogs = await Promise.all(pagePromises);
+      setStatementsList([...firstPage.logs, ...remainingLogs.flat()]);
+    } catch {
+      setStatementsList([]);
+      setStatementsError("Failed to load statements");
+    } finally {
+      setStatementsLoading(false);
+    }
+  }, []);
+
+  // Fetch statements from DB per supplier by contact id when Statements tab is active
+  useEffect(() => {
+    if (activeTab !== "statements") return;
+    void refetchStatementsList();
+  }, [activeTab, refetchStatementsList]);
 
   const [expandedRows, setExpandedRows] = useState(() => new Set());
   const [expandedStatementSuppliers, setExpandedStatementSuppliers] = useState(() => new Set());
@@ -606,6 +610,8 @@ export default function SimpleApp() {
   // Tab 3 (reconciled): selected invoice ids for bulk actions (e.g. Paid)
   const [tab3SelectedIds, setTab3SelectedIds] = useState(() => new Set());
   const [deletingInvoiceId, setDeletingInvoiceId] = useState(null);
+  const [deletingLatestRowKey, setDeletingLatestRowKey] = useState(null);
+  const [deletingStatementId, setDeletingStatementId] = useState(null);
   const [hidePaidAndMatchedInTab1, setHidePaidAndMatchedInTab1] = useState(false);
   const toggleTab3InvoiceSelection = (id) => {
     setTab3SelectedIds((prev) => {
@@ -694,6 +700,9 @@ export default function SimpleApp() {
       const res = await fetch(`/api/v2/dashboard/invoices/${encodeURIComponent(invoiceId)}`, { method: "DELETE", credentials: "include" });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message || "Failed to delete invoice");
+      if ((data?.deletedCount ?? 0) > 1) {
+        alert(data.message || `${data.deletedCount} file invoice(s) deleted from this statement.`);
+      }
       await Promise.all([refetchDashboardData(), refetchTab2(), refetchTab3()]);
     } catch (err) {
       console.error(err);
@@ -702,6 +711,74 @@ export default function SimpleApp() {
       setDeletingInvoiceId(null);
     }
   }, [refetchDashboardData, refetchTab2, refetchTab3]);
+
+  const handleDeleteLatestFileOnlyInvoices = useCallback(async (rowKey, supplierName, invoiceIds) => {
+    if (!rowKey || !Array.isArray(invoiceIds) || invoiceIds.length === 0) return;
+    const count = invoiceIds.length;
+    const supplier = supplierName || "this supplier";
+    const confirmed = window.confirm(
+      `Delete ${count} file-only invoice${count !== 1 ? "s" : ""} for ${supplier}? This cannot be undone.`
+    );
+    if (!confirmed) return;
+    const rowKeyStr = String(rowKey);
+    setDeletingLatestRowKey(rowKeyStr);
+    try {
+      const results = await Promise.allSettled(
+        invoiceIds.map(async (invoiceId) => {
+          const res = await fetch(`/api/v2/dashboard/invoices/${encodeURIComponent(invoiceId)}`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+          let data = null;
+          try {
+            data = await res.json();
+          } catch {
+            data = null;
+          }
+          if (res.ok && (data == null || data.success !== false)) return { outcome: "deleted", invoiceId };
+          const msg = String(data?.message || "");
+          const notFound = res.status === 404 || /not found|already deleted|does not exist/i.test(msg);
+          if (notFound) return { outcome: "missing", invoiceId };
+          throw new Error(data?.message || `Failed to delete invoice ${invoiceId}`);
+        })
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      if (failed.length > 0) {
+        const firstError = failed[0]?.reason?.message || "Failed to delete some invoices";
+        alert(`${firstError} (${failed.length} failed)`);
+      }
+      await Promise.all([refetchDashboardData(), refetchTab2(), refetchTab3()]);
+    } catch (err) {
+      console.error(err);
+      alert(err.message || "Failed to delete invoices");
+    } finally {
+      setDeletingLatestRowKey(null);
+    }
+  }, [refetchDashboardData, refetchTab2, refetchTab3]);
+
+  const handleDeleteStatement = useCallback(async (statementId) => {
+    if (!statementId) return;
+    setDeletingStatementId(String(statementId));
+    try {
+      const res = await fetch(`/api/v2/supplier-logs/statements/${encodeURIComponent(statementId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || "Failed to delete statement");
+      await Promise.all([
+        refetchStatementsList(),
+        refetchDashboardData(),
+        refetchTab2(),
+        refetchTab3(),
+      ]);
+    } catch (err) {
+      console.error(err);
+      alert(err.message || "Failed to delete statement");
+    } finally {
+      setDeletingStatementId(null);
+    }
+  }, [refetchStatementsList, refetchDashboardData, refetchTab2, refetchTab3]);
 
   const handleUndoPaid = useCallback(async () => {
     const { invoiceIds } = tab3PaidToast;
@@ -860,7 +937,7 @@ export default function SimpleApp() {
           const dueOrDate = u.dueDate || u.date;
           rows.push({
             supplier,
-            issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
+            issue: u.fromXero ? "UNVERIFIED" : "MISSING FROM XERO",
             invoiceNumber: u.invoiceNumber || "",
             fileAmount: u.fromXero ? "" : amtOrig,
             fileCurrency: u.fromXero ? "" : curr,
@@ -919,7 +996,7 @@ export default function SimpleApp() {
       const dueOrDate = u.dueDate || u.date;
       rows.push({
         supplier,
-        issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
+        issue: u.fromXero ? "UNVERIFIED" : "MISSING FROM XERO",
         invoiceNumber: u.invoiceNumber || "",
         fileAmount: u.fromXero ? "" : amtOrig,
         fileCurrency: u.fromXero ? "" : curr,
@@ -1592,8 +1669,7 @@ export default function SimpleApp() {
               className={`${styles.tab} ${activeTab === "attention" ? styles.tabActive : ""}`}
               onClick={() => setActiveTab("attention")}
             >
-              Needs Your Attention
-              <span className={styles.tabBadge}>{attentionInvoiceCount} invoices</span>
+              Supplers
             </button>
             <button
               type="button"
@@ -1606,7 +1682,6 @@ export default function SimpleApp() {
               onClick={() => setActiveTab("reconciled")}
             >
               Reconciled
-              <span className={styles.tabBadge}>{reconciledInvoiceCount} invoices</span>
             </button>
             <button
               type="button"
@@ -1665,7 +1740,7 @@ export default function SimpleApp() {
                 <p className={styles.statementsListMessage}>{statementsError}</p>
               )}
               {!statementsLoading && !statementsError && statementsBySupplier.length === 0 && (
-                <p className={styles.statementsListMessage}>No statements with invoices.</p>
+                <p className={styles.statementsListMessage}>No statements with more than 1 invoice.</p>
               )}
               {!statementsLoading && !statementsError && statementsBySupplier.length > 0 && (
                 <div className={styles.tableWrap}>
@@ -1675,10 +1750,11 @@ export default function SimpleApp() {
                         <th className={styles.tableTh}>SUPPLIER NAME</th>
                         <th className={styles.tableTh}>STATEMENTS</th>
                         <th className={styles.tableTh}>INVOICES</th>
+                        <th className={styles.tableTh}>TOTAL AMOUNT (ORIGINAL CURRENCY)</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {statementsBySupplier.map(({ supplierName, contactId, statements }) => {
+                      {statementsBySupplier.map(({ supplierName, contactId, statements, supplierCurrency, totalAmountOriginal }) => {
                         const totalInvoices = statements.reduce((sum, log) => sum + (log.total ?? 0), 0);
                         const expandKey = contactId || supplierName;
                         const isExpanded = expandedStatementSuppliers.has(expandKey);
@@ -1698,10 +1774,13 @@ export default function SimpleApp() {
                               </td>
                               <td className={styles.tableTd}>{statements.length}</td>
                               <td className={styles.tableTd}>{totalInvoices}</td>
+                              <td className={styles.tableTd}>
+                                {formatCurrencyTableAmount(supplierCurrency, totalAmountOriginal)}
+                              </td>
                             </tr>
                             {isExpanded && (
                               <tr className={styles.tableRowDetail}>
-                                <td colSpan={3} className={styles.tableTdDetail}>
+                                <td colSpan={4} className={styles.tableTdDetail}>
                                   <div className={styles.detailPanel}>
                                     <h3 className={styles.detailTitle}>Statements</h3>
                                     <div className={styles.detailTableWrap}>
@@ -1710,19 +1789,29 @@ export default function SimpleApp() {
                                           <tr>
                                             <th className={styles.detailTh}>PROCESSED</th>
                                             <th className={styles.detailTh}>INVOICES</th>
+                                            <th className={styles.detailTh}>AMOUNT (ORIGINAL CURRENCY)</th>
                                             <th className={styles.detailTh}>VIEW PDF</th>
+                                            <th className={styles.detailTh}>ACTION</th>
                                           </tr>
                                         </thead>
                                         <tbody>
                                           {statements.map((log) => {
                                             const isPdf = /\.pdf$/i.test(String(log?.file ?? ""));
                                             const invoiceCount = log.total ?? 0;
+                                            const statementAmount = Number(log?.amountOriginal);
+                                            const statementCurrency = log?.supplierCurrency ?? supplierCurrency ?? "GBP";
                                             return (
                                               <tr key={log._id}>
                                                 <td className={styles.detailTd}>
                                                   {formatLogDateTime(log.addedAt) ?? "—"}
                                                 </td>
                                                 <td className={styles.detailTd}>{invoiceCount}</td>
+                                                <td className={styles.detailTd}>
+                                                  {formatCurrencyTableAmount(
+                                                    statementCurrency,
+                                                    Number.isFinite(statementAmount) ? statementAmount : null
+                                                  )}
+                                                </td>
                                                 <td className={styles.detailTd}>
                                                   <a
                                                     href={`/file/${log._id}`}
@@ -1734,6 +1823,30 @@ export default function SimpleApp() {
                                                   >
                                                     {isPdf ? "View PDF" : "Download file"}
                                                   </a>
+                                                </td>
+                                                <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
+                                                  <button
+                                                    type="button"
+                                                    className={styles.detailDeleteBtn}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleDeleteStatement(log._id);
+                                                    }}
+                                                    disabled={deletingStatementId === String(log._id)}
+                                                    aria-label={`Delete statement ${log._id}`}
+                                                    title="Delete statement"
+                                                  >
+                                                    {deletingStatementId === String(log._id) ? (
+                                                      <span className={styles.detailDeleteSpinner} aria-hidden />
+                                                    ) : (
+                                                      <svg className={styles.detailDeleteIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                                        <polyline points="3 6 5 6 21 6" />
+                                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                                        <line x1="10" y1="11" x2="10" y2="17" />
+                                                        <line x1="14" y1="11" x2="14" y2="17" />
+                                                      </svg>
+                                                    )}
+                                                  </button>
                                                 </td>
                                               </tr>
                                             );
@@ -1825,6 +1938,11 @@ export default function SimpleApp() {
                         Export
                       </th>
                     )}
+                    {activeTab === "latest" && (
+                      <th key="delete-file-only" className={styles.tableTh} style={{ width: 52 }}>
+                        Delete
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -1852,6 +1970,21 @@ export default function SimpleApp() {
                         ? row.invoicesNeedAttention
                         : [];
                     const viewAllInvoices = activeTab === "latest" && Array.isArray(row.invoicesViewAll) ? row.invoicesViewAll : [];
+                    const latestFileOnlyDeleteIds =
+                      activeTab === "latest"
+                        ? Array.from(
+                            new Set(
+                              [...viewAllInvoices, ...detailInvoices]
+                                .filter((inv) => {
+                                  const issue = String(inv?.issue || "").toUpperCase();
+                                  return inv?.fromXero === false || issue === "MISSING FROM XERO" || issue === "FILE ONLY";
+                                })
+                                .map((inv) => inv?.deleteInvoiceId ?? inv?.invoiceId ?? inv?._id ?? inv?.id)
+                                .filter(Boolean)
+                                .map((id) => String(id))
+                            )
+                          )
+                        : [];
                     const tab2Pairs = activeTab === "attention" ? (row.pairs || []) : [];
                     const tab2Unpaired = activeTab === "attention" ? (row.unpairedInvoices || []) : [];
                     const tab3Pairs = activeTab === "reconciled" ? (row.pairs || []) : [];
@@ -1946,7 +2079,7 @@ export default function SimpleApp() {
                                 xeroCurrencyOriginal: u.xeroCurrencyOriginal ?? (u.fromXero ? (u.currency ?? "GBP") : null),
                                 differenceOriginal: null,
                                 differenceOriginalCurrency: null,
-                                issue: u.fromXero ? "MISSING FROM FILE" : "MISSING FROM XERO",
+                                issue: u.fromXero ? "UNVERIFIED" : "MISSING FROM XERO",
                                 supplierAmt: u.fromXero ? null : amt,
                                 xeroAmt: u.fromXero ? amt : null,
                                 difference: amt,
@@ -2041,7 +2174,7 @@ export default function SimpleApp() {
                               (row.statusIssueCounts.missingFromFile ?? 0) > 0) ? (
                               <span
                                 className={styles.statusIssueDots}
-                                aria-label={`Amount mismatch: ${row.statusIssueCounts.amountMismatch ?? 0}, Missing from Xero: ${row.statusIssueCounts.missingFromXero ?? 0}, Missing from file: ${row.statusIssueCounts.missingFromFile ?? 0}`}
+                                aria-label={`Amount mismatch: ${row.statusIssueCounts.amountMismatch ?? 0}, Missing from Xero: ${row.statusIssueCounts.missingFromXero ?? 0}, Unverified: ${row.statusIssueCounts.missingFromFile ?? 0}`}
                               >
                                 {(row.statusIssueCounts.amountMismatch ?? 0) > 0 && (
                                   <span
@@ -2070,9 +2203,9 @@ export default function SimpleApp() {
                                 {(row.statusIssueCounts.missingFromFile ?? 0) > 0 && (
                                   <span
                                     className={styles.statusIssueDotWrap}
-                                    data-tooltip={`Missing from file (${row.statusIssueCounts.missingFromFile})`}
+                                    data-tooltip={`Unverified (${row.statusIssueCounts.missingFromFile})`}
                                     tabIndex={0}
-                                    aria-label="Missing from file"
+                                    aria-label="Unverified"
                                   >
                                     <span className={`${styles.statusIssueDot} ${styles.statusIssueDotMissingFile}`} aria-hidden>
                                       {row.statusIssueCounts.missingFromFile}
@@ -2087,6 +2220,36 @@ export default function SimpleApp() {
                               </span>
                             )}
                           </td>
+                          {activeTab === "latest" && (
+                            <td className={styles.tableTd} onClick={(e) => e.stopPropagation()}>
+                              <button
+                                type="button"
+                                className={styles.detailDeleteBtn}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteLatestFileOnlyInvoices(rowKey, row.supplier, latestFileOnlyDeleteIds);
+                                }}
+                                disabled={deletingLatestRowKey === String(rowKey) || latestFileOnlyDeleteIds.length === 0}
+                                aria-label={`Delete file-only invoices for ${row.supplier}`}
+                                title={
+                                  latestFileOnlyDeleteIds.length > 0
+                                    ? `Delete ${latestFileOnlyDeleteIds.length} file-only invoice${latestFileOnlyDeleteIds.length !== 1 ? "s" : ""}`
+                                    : "No file-only invoices to delete"
+                                }
+                              >
+                                {deletingLatestRowKey === String(rowKey) ? (
+                                  <span className={styles.detailDeleteSpinner} aria-hidden />
+                                ) : (
+                                  <svg className={styles.detailDeleteIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                    <line x1="10" y1="11" x2="10" y2="17" />
+                                    <line x1="14" y1="11" x2="14" y2="17" />
+                                  </svg>
+                                )}
+                              </button>
+                            </td>
+                          )}
                           {activeTab === "attention" && (
                             <td className={styles.tableTd} onClick={(e) => e.stopPropagation()}>
                               <button
@@ -2140,7 +2303,7 @@ export default function SimpleApp() {
                         </tr>
                         {isExpanded && (
                           <tr className={styles.tableRowDetail}>
-                            <td colSpan={activeTab === "reconciled" ? 6 : activeTab === "attention" ? 8 : 7} className={styles.tableTdDetail}>
+                            <td colSpan={activeTab === "reconciled" ? 6 : activeTab === "attention" ? 8 : activeTab === "latest" ? 8 : 7} className={styles.tableTdDetail}>
                               {activeTab === "reconciled" ? (
                                 <div className={styles.reconciledExpanded}>
                                   <div className={styles.reconciledCard}>
@@ -2377,9 +2540,9 @@ export default function SimpleApp() {
                                           setHidePaidAndMatchedInTab1((v) => !v);
                                         }}
                                         aria-pressed={hidePaidAndMatchedInTab1}
-                                        aria-label={hidePaidAndMatchedInTab1 ? "Show paid and matched" : "Hide paid and matched"}
+                                        aria-label={hidePaidAndMatchedInTab1 ? "Show paid and reconciled" : "Hide paid and reconciled"}
                                       >
-                                        {hidePaidAndMatchedInTab1 ? "Show paid & matched" : "Hide paid & matched"}
+                                        {hidePaidAndMatchedInTab1 ? "Show paid & reconciled" : "Hide paid & reconciled"}
                                       </button>
                                     )}
                                     <button
@@ -2410,7 +2573,7 @@ export default function SimpleApp() {
                                   <p className={styles.detailNoUnpaid}>No unpaid invoices.</p>
                                 )}
                                 {activeTab === "latest" && hidePaidAndMatchedInTab1 && detailRows.length > 0 && sortedDetailRows.length === 0 && (
-                                  <p className={styles.detailNoUnpaid}>All invoices here are paid or matched.</p>
+                                  <p className={styles.detailNoUnpaid}>All invoices here are paid or reconciled.</p>
                                 )}
                                 {detailRows.length > 0 && (
                                 <div className={styles.detailTableWrap}>
@@ -2448,13 +2611,13 @@ export default function SimpleApp() {
                                             {inv.issue === "paid" ? (
                                               <span className={styles.issuePillPaid}>paid</span>
                                             ) : inv.issue === "Matched" ? (
-                                              <span className={styles.issuePillMatched}>Matched</span>
+                                              <span className={styles.issuePillMatched}>Reconciled</span>
                                             ) : inv.issue === "AMOUNT MISMATCH" ? (
                                               <span className={styles.issuePillMismatch}>{inv.issue}</span>
                                             ) : inv.issue === "MISSING FROM XERO" ? (
                                               <span className={styles.issuePillMissingFromXero}>{inv.issue}</span>
-                                            ) : inv.issue === "MISSING FROM FILE" ? (
-                                              <span className={styles.issuePillMissingFromFile}>{inv.issue}</span>
+                                            ) : inv.issue === "MISSING FROM FILE" || inv.issue === "UNVERIFIED" ? (
+                                              <span className={styles.issuePillMissingFromFile}>Unverified</span>
                                             ) : (
                                               <span className={styles.issuePillMissing}>{inv.issue}</span>
                                             )}

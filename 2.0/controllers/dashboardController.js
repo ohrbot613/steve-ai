@@ -861,22 +861,53 @@ exports.syncNowWithXero = tryCatchAsync(async (req, res) => {
 
 /**
  * DELETE /api/v2/dashboard/invoices/:id
- * Soft-delete a single invoice.
+ * Soft-delete a single invoice, or all file invoices in same statement.
  */
 exports.hardDeleteInvoice = tryCatchAsync(async (req, res) => {
     const { id } = req.params;
     if (!id || !mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({ success: false, message: "Valid invoice id is required." });
     }
-    const invoice = await Invoice.findOne({ _id: id, isDeleted: { $ne: true } }).select("_id").lean();
+    const invoice = await Invoice.findOne({ _id: id, isDeleted: { $ne: true } })
+        .select("_id statementId")
+        .lean();
     if (!invoice) {
         return res.status(404).json({ success: false, message: "Invoice not found." });
     }
-    await Invoice.updateOne(
-        { _id: id },
-        { $set: { isDeleted: true, modifiedLast: new Date() } }
-    );
+
+    const now = new Date();
+    let deletedCount = 0;
+    let cascade = false;
+
+    if (invoice.statementId && mongoose.Types.ObjectId.isValid(String(invoice.statementId))) {
+        const result = await Invoice.updateMany(
+            { statementId: invoice.statementId, fromXero: false, isDeleted: { $ne: true } },
+            { $set: { isDeleted: true, modifiedLast: now } }
+        );
+        deletedCount = result?.modifiedCount ?? 0;
+        cascade = true;
+    } else {
+        const result = await Invoice.updateOne(
+            { _id: id, isDeleted: { $ne: true } },
+            { $set: { isDeleted: true, modifiedLast: now } }
+        );
+        deletedCount = result?.modifiedCount ?? 0;
+    }
+
     const userId = req.user?._id ?? null;
-    await logProcess(`Soft-deleted invoice ${id} (dashboard)`, [id], userId);
-    res.status(200).json({ success: true, message: "Invoice deleted." });
+    await logProcess(
+        cascade
+            ? `Soft-deleted ${deletedCount} file invoice(s) from statement ${invoice.statementId} (dashboard)`
+            : `Soft-deleted invoice ${id} (dashboard)`,
+        [id],
+        userId
+    );
+    res.status(200).json({
+        success: true,
+        deletedCount,
+        cascade,
+        message: cascade
+            ? `${deletedCount} file invoice(s) deleted from this statement.`
+            : "Invoice deleted.",
+    });
 });

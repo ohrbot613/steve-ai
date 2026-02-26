@@ -64,6 +64,25 @@ exports.getStatementsByVendor = tryCatchAsync(async (req, res) => {
             $addFields: {
                 total: { $size: "$fileInvoices" },
                 fileInvoiceNumbers: { $map: { input: "$fileInvoices", as: "inv", in: "$$inv.invoiceNumber" } },
+                amountOriginal: {
+                    $sum: {
+                        $map: {
+                            input: "$fileInvoices",
+                            as: "inv",
+                            in: {
+                                $convert: {
+                                    input: "$$inv.amount",
+                                    to: "double",
+                                    onError: 0,
+                                    onNull: 0,
+                                }
+                            },
+                        }
+                    }
+                },
+                supplierCurrency: {
+                    $ifNull: [{ $arrayElemAt: ["$fileInvoices.currency", 0] }, "GBP"]
+                },
             }
         },
         {
@@ -126,6 +145,8 @@ exports.getStatementsByVendor = tryCatchAsync(async (req, res) => {
         invoiceIssueDate: doc.dateOnFile,
         addedAt: doc.createdAt,
         file: doc.file,
+        amountOriginal: doc.amountOriginal ?? 0,
+        supplierCurrency: doc.supplierCurrency ?? "GBP",
         reconciled: doc.reconciled ?? 0,
         unreconciled: doc.unreconciled ?? 0,
         total: doc.total ?? 0,
@@ -144,8 +165,13 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
     const page = Number(req.query.page) || 1;
     const sortBy = req.query.sortBy || "processDateTime";
     const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
+    const fast = req.query.fast === "1";
+    const requestedLimit = Number(req.query.limit);
+    const pageLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(Math.floor(requestedLimit), 500)
+        : LIMIT;
     const contactId = req.query.contactId ? String(req.query.contactId).trim() : null;
-    const offset = (page - 1) * LIMIT;
+    const offset = (page - 1) * pageLimit;
 
     const baseMatch = { isDeleted: { $ne: true } };
     if (contactId) baseMatch.contactId = contactId;
@@ -179,48 +205,69 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
             $addFields: {
                 total: { $size: "$fileInvoices" },
                 fileInvoiceNumbers: { $map: { input: "$fileInvoices", as: "inv", in: "$$inv.invoiceNumber" } },
-            }
-        },
-        {
-            $lookup: {
-                from: "invoices-2.0",
-                let: { contactId: "$contactId", fileNumbers: "$fileInvoiceNumbers" },
-                pipeline: [
-                    { $match: { isDeleted: { $ne: true } } },
-                    {
-                        $match: {
-                            $expr: {
-                                $and: [
-                                    { $eq: ["$contactId", "$$contactId"] },
-                                    { $eq: ["$fromXero", true] },
-                                    { $in: ["$invoiceNumber", "$$fileNumbers"] },
-                                ]
-                            }
-                        }
-                    },
-                ],
-                as: "xeroMatches",
-            }
-        },
-        { $addFields: { matchedCount: { $size: "$xeroMatches" } } },
-        {
-            $addFields: {
-                reconciled: "$matchedCount",
-                unreconciled: { $subtract: ["$total", "$matchedCount"] },
-                status: {
-                    $cond: {
-                        if: { $eq: ["$total", 0] },
-                        then: "not reconciled",
-                        else: {
-                            $cond: {
-                                if: { $eq: ["$matchedCount", "$total"] }, then: "reconciled",
-                                else: { $cond: { if: { $eq: ["$matchedCount", 0] }, then: "not reconciled", else: "partially reconciled" } }
+                amountOriginal: {
+                    $sum: {
+                        $map: {
+                            input: "$fileInvoices",
+                            as: "inv",
+                            in: {
+                                $convert: {
+                                    input: "$$inv.amount",
+                                    to: "double",
+                                    onError: 0,
+                                    onNull: 0,
+                                }
                             },
-                        },
-                    },
+                        }
+                    }
+                },
+                supplierCurrency: {
+                    $ifNull: [{ $arrayElemAt: ["$fileInvoices.currency", 0] }, "GBP"]
                 },
             }
         },
+        ...(fast ? [] : [
+            {
+                $lookup: {
+                    from: "invoices-2.0",
+                    let: { contactId: "$contactId", fileNumbers: "$fileInvoiceNumbers" },
+                    pipeline: [
+                        { $match: { isDeleted: { $ne: true } } },
+                        {
+                            $match: {
+                                $expr: {
+                                    $and: [
+                                        { $eq: ["$contactId", "$$contactId"] },
+                                        { $eq: ["$fromXero", true] },
+                                        { $in: ["$invoiceNumber", "$$fileNumbers"] },
+                                    ]
+                                }
+                            }
+                        },
+                    ],
+                    as: "xeroMatches",
+                }
+            },
+            { $addFields: { matchedCount: { $size: "$xeroMatches" } } },
+            {
+                $addFields: {
+                    reconciled: "$matchedCount",
+                    unreconciled: { $subtract: ["$total", "$matchedCount"] },
+                    status: {
+                        $cond: {
+                            if: { $eq: ["$total", 0] },
+                            then: "not reconciled",
+                            else: {
+                                $cond: {
+                                    if: { $eq: ["$matchedCount", "$total"] }, then: "reconciled",
+                                    else: { $cond: { if: { $eq: ["$matchedCount", 0] }, then: "not reconciled", else: "partially reconciled" } }
+                                },
+                            },
+                        },
+                    },
+                }
+            },
+        ]),
         {
             $lookup: {
                 from: "vendors-2.0",
@@ -236,12 +283,13 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
             $addFields: {
                 vendorName: { $ifNull: [{ $arrayElemAt: ["$vendorDoc.name", 0] }, "Unknown Supplier"] },
                 vendorId: { $arrayElemAt: ["$vendorDoc._id", 0] },
+                ...(fast ? { reconciled: 0, unreconciled: 0, status: "not reconciled" } : {}),
             }
         },
         { $project: { invoices: 0, fileInvoices: 0, fileInvoiceNumbers: 0, xeroMatches: 0, matchedCount: 0, vendorDoc: 0 } },
         { $sort: { [sortField]: sortOrder } },
         { $skip: offset },
-        { $limit: LIMIT },
+        { $limit: pageLimit },
     ];
 
     const [logsRaw, total] = await Promise.all([
@@ -255,6 +303,8 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
         invoiceIssueDate: doc.dateOnFile,
         addedAt: doc.createdAt,
         file: doc.file,
+        amountOriginal: doc.amountOriginal ?? 0,
+        supplierCurrency: doc.supplierCurrency ?? "GBP",
         reconciled: doc.reconciled ?? 0,
         unreconciled: doc.unreconciled ?? 0,
         total: doc.total ?? 0,
@@ -262,7 +312,7 @@ exports.getAllStatements = tryCatchAsync(async (req, res) => {
         supplier: { _id: doc.vendorId, name: doc.vendorName },
     }));
 
-    res.status(200).json({ success: true, logs, pages: Math.max(1, Math.ceil(total / LIMIT)) });
+    res.status(200).json({ success: true, logs, pages: Math.max(1, Math.ceil(total / pageLimit)) });
 });
 
 /**
@@ -380,13 +430,45 @@ exports.deleteStatement = tryCatchAsync(async (req, res) => {
     const { id } = req.params;
     if (!id) return res.status(400).json({ success: false, message: "Statement id is required" });
 
-    const statement = await Statement.findById(id);
+    const statement = await Statement.findOne({ _id: id, isDeleted: { $ne: true } }).lean();
     if (!statement) return res.status(404).json({ success: false, message: "Statement not found" });
 
-    await Statement.updateOne({ _id: id }, { $set: { isDeleted: true } });
-    await Invoice.updateMany({ statementId: id }, { $set: { isDeleted: true } });
+    const now = new Date();
+    await Statement.updateOne({ _id: id }, { $set: { isDeleted: true, modifiedLast: now } });
+    const deletedInvoicesResult = await Invoice.updateMany(
+        { statementId: id, fromXero: false, isDeleted: { $ne: true } },
+        { $set: { isDeleted: true, modifiedLast: now } }
+    );
+    const deletedInvoiceCount = deletedInvoicesResult?.modifiedCount ?? 0;
 
-    res.status(200).json({ success: true, message: "Statement deleted" });
+    let supplierFlagUpdated = false;
+    let vendorId = null;
+    if (statement.contactId) {
+        const remainingFileInvoices = await Invoice.countDocuments({
+            contactId: statement.contactId,
+            fromXero: false,
+            isDeleted: { $ne: true },
+        });
+        if (remainingFileInvoices === 0) {
+            const vendorUpdate = await Vendor.updateOne(
+                { xeroId: statement.contactId, supplier: true, isDeleted: { $ne: true } },
+                { $set: { supplier: false, modifiedLast: now } }
+            );
+            supplierFlagUpdated = (vendorUpdate?.modifiedCount ?? 0) > 0;
+            if (supplierFlagUpdated) {
+                const vendor = await Vendor.findOne({ xeroId: statement.contactId }).select("_id").lean();
+                vendorId = vendor?._id ?? null;
+            }
+        }
+    }
+
+    res.status(200).json({
+        success: true,
+        message: "Statement deleted",
+        deletedInvoiceCount,
+        supplierFlagUpdated,
+        vendorId,
+    });
 });
 
 /**
