@@ -565,6 +565,33 @@ $simple-border: #1A1D28;
   border: 1px solid $simple-border;
 }
 
+.tab1BulkDeleteBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fecaca;
+  background-color: rgba(127, 29, 29, 0.35);
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+
+  &:hover:not(:disabled) {
+    background-color: rgba(127, 29, 29, 0.55);
+    border-color: rgba(239, 68, 68, 0.65);
+    color: #fee2e2;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
 .tab1HideToggle {
   color: #9CA3AF;
   background-color: rgba(31, 41, 55, 0.8);
@@ -985,6 +1012,16 @@ $simple-border: #1A1D28;
   animation: paidToastIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+.paidToastError {
+  border-color: #7F1D1D;
+  background-color: #2F1111;
+}
+
+.paidToastSuccess {
+  border-color: #166534;
+  background-color: #052E16;
+}
+
 @keyframes paidToastIn {
   from {
     opacity: 0;
@@ -1020,6 +1057,23 @@ $simple-border: #1A1D28;
 
   &:active {
     transform: scale(0.98);
+  }
+}
+
+.paidToastDismiss {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #E2E8F0;
+  background-color: transparent;
+  border: 1px solid #64748B;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 0.2s ease;
+
+  &:hover {
+    background-color: rgba(100, 116, 139, 0.2);
   }
 }
 
@@ -1267,6 +1321,7 @@ $simple-border: #1A1D28;
 .issuePillMissing,
 .issuePillMissingFromXero,
 .issuePillMissingFromFile,
+.issuePillOverdue,
 .issuePillMismatch,
 .issuePillMatched {
   animation: issuePillIn 0.28s cubic-bezier(0.34, 1.56, 0.64, 1) 0.08s backwards;
@@ -1302,6 +1357,17 @@ $simple-border: #1A1D28;
   background-color: rgba(56, 189, 248, 0.22);
   color: #BAE6FD;
   border: 1px solid rgba(56, 189, 248, 0.45);
+}
+
+.issuePillOverdue {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  background-color: rgba(249, 115, 22, 0.22);
+  color: #fdba74;
+  border: 1px solid rgba(249, 115, 22, 0.45);
 }
 
 .issuePillMismatch {
@@ -1521,6 +1587,11 @@ $simple-border: #1A1D28;
 .statusIssueDotMissingFile {
   background: #38bdf8;
   color: #082f49;
+}
+
+.statusIssueDotOverdue {
+  background: #fb923c;
+  color: #431407;
 }
 
 
@@ -1771,6 +1842,38 @@ $simple-border: #1A1D28;
   font-size: 12px;
 }
 
+.predefinedNamesList {
+  margin-top: 10px;
+  max-height: 42vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.predefinedNamesRow {
+  border: 1px solid $simple-border;
+  border-radius: 8px;
+  padding: 10px;
+  background-color: rgba(15, 23, 42, 0.45);
+}
+
+.predefinedNamesFile {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #E2E8F0;
+  font-size: 13px;
+
+  span {
+    color: #94A3B8;
+    font-size: 12px;
+  }
+}
+
 // Email supplier modal (dashboard 2.0)
 .emailModalOverlay {
   position: fixed;
@@ -1788,7 +1891,7 @@ $simple-border: #1A1D28;
   border: 1px solid $simple-border;
   border-radius: 12px;
   padding: 24px;
-  max-width: 480px;
+  max-width: 920px;
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
@@ -1838,7 +1941,6 @@ $simple-border: #1A1D28;
 }
 
 .emailModalClose {
-  margin-top: 20px;
   padding: 10px 20px;
   font-size: 14px;
   font-weight: 600;
@@ -1853,5 +1955,38 @@ $simple-border: #1A1D28;
   &:hover {
     background-color: #6B7280;
   }
+}
+
+.emailModalActions {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.emailModalPrimary {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ffffff;
+  background-color: #2563EB;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 0.2s ease;
+
+  &:hover {
+    background-color: #1D4ED8;
+  }
+}
+
+.emailModalClose,
+.emailModalPrimary {
+  min-width: 150px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 

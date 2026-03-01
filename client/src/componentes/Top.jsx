@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Link, useNavigate, useLocation } from "react-router-dom"
 import styles from "../scss/Top.module.scss"
 import modalStyle from "../scss/Modal.module.scss"
@@ -22,6 +22,8 @@ export default function Top() {
     const [reloading, setReloading] = useState(null);
     const [reloadResult, setReloadResult] = useState(null);
     const [backendReloading, setBackendReloading] = useState(false);
+    const [errorsMenuOpen, setErrorsMenuOpen] = useState(false);
+    const errorsMenuRef = useRef(null);
 
     useEffect(() => {
         async function fetchBalance() {
@@ -58,6 +60,17 @@ export default function Top() {
         checkReloading();
         const id = setInterval(checkReloading, RELOADING_POLL_MS);
         return () => clearInterval(id);
+    }, []);
+
+    useEffect(() => {
+        function handleClickOutside(event) {
+            if (!errorsMenuRef.current) return;
+            if (!errorsMenuRef.current.contains(event.target)) {
+                setErrorsMenuOpen(false);
+            }
+        }
+        window.addEventListener("mousedown", handleClickOutside);
+        return () => window.removeEventListener("mousedown", handleClickOutside);
     }, []);
 
     // V1 app lives under /v1; all links and active states use /v1 prefix
@@ -166,6 +179,44 @@ export default function Top() {
                     <Link to="/" className={styles.appModeSwitch} title="Back to main app">
                         <span className={styles.appModeBtn}>Main app</span>
                     </Link>
+                    <div className={styles.errorsMenuWrapper} ref={errorsMenuRef}>
+                        <button
+                            type="button"
+                            className={styles.reportErrorButton}
+                            onClick={() => setErrorsMenuOpen((prev) => !prev)}
+                            aria-haspopup="menu"
+                            aria-expanded={errorsMenuOpen}
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+                                <path d="M12 9v4"></path>
+                                <path d="M12 17h.01"></path>
+                            </svg>
+                            <p>Errors</p>
+                        </button>
+                        {errorsMenuOpen && (
+                            <div className={styles.errorsMenu} role="menu">
+                                <button
+                                    type="button"
+                                    className={styles.errorsMenuItem}
+                                    onClick={() => {
+                                        setShowReportError(true);
+                                        setErrorsMenuOpen(false);
+                                    }}
+                                >
+                                    Report errors
+                                </button>
+                                <Link
+                                    to="/errors"
+                                    className={styles.errorsMenuItem}
+                                    role="menuitem"
+                                    onClick={() => setErrorsMenuOpen(false)}
+                                >
+                                    View errors
+                                </Link>
+                            </div>
+                        )}
+                    </div>
                     <div className={styles.userBalance}>
                         <span className={styles.userBalanceLabel}>
                             Bank balance
@@ -175,19 +226,6 @@ export default function Top() {
                              bankBalance != null ? formatCurrency(bankBalance, null) : '—'}
                         </span>
                     </div>
-                    <button
-                        type="button"
-                        className={styles.reportErrorButton}
-                        onClick={() => setShowReportError(true)}
-                        title="Report an error"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
-                            <path d="M12 9v4"></path>
-                            <path d="M12 17h.01"></path>
-                        </svg>
-                        <p>Report error</p>
-                    </button>
                     <UserProfile
                         onLogout={handleLogout}
                         onReloadSuppliers={() => setReloadConfirm("suppliers")}

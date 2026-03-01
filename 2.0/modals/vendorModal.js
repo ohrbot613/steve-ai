@@ -66,5 +66,6 @@ const vendorSchema = new mongoose.Schema(
     },
 
 );
+vendorSchema.index({ xeroId: 1, isDeleted: 1, supplier: 1 });
 const Vendor = conn.model("Vendor", vendorSchema, "vendors-2.0");
 module.exports = Vendor;

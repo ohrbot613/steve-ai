@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import html2canvas from 'html2canvas'
 import styles from '../scss/Modal.module.scss'
 
@@ -32,6 +32,16 @@ async function capturePageScreenshot(modalOverlayRef) {
     return dataUrl
 }
 
+function waitForIdle(timeoutMs = 500) {
+    return new Promise((resolve) => {
+        if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(() => resolve(), { timeout: timeoutMs })
+        } else {
+            window.setTimeout(resolve, Math.min(timeoutMs, 250))
+        }
+    })
+}
+
 function readFileAsBase64(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader()
@@ -41,13 +51,29 @@ function readFileAsBase64(file) {
     })
 }
 
-export default function ReportErrorModal({ onClose }) {
-    const [message, setMessage] = useState('')
+export default function ReportErrorModal({ onClose, initialMessage = '' }) {
+    const [message, setMessage] = useState(initialMessage || '')
+    const [includeScreenshot, setIncludeScreenshot] = useState(true)
     const [files, setFiles] = useState([])
     const [status, setStatus] = useState(null) // 'loading' | 'success' | 'error'
     const [errorText, setErrorText] = useState('')
+    const [captureStatus, setCaptureStatus] = useState('')
     const overlayRef = useRef(null)
     const fileInputRef = useRef(null)
+
+    useEffect(() => {
+        setMessage(initialMessage || '')
+    }, [initialMessage])
+
+    useEffect(() => {
+        const onKeyDown = (event) => {
+            if (event.key === 'Escape' && status !== 'loading') {
+                onClose()
+            }
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
+    }, [onClose, status])
 
     async function handleSubmit(e) {
         e.preventDefault()
@@ -58,12 +84,19 @@ export default function ReportErrorModal({ onClose }) {
         }
         setStatus('loading')
         setErrorText('')
+        setCaptureStatus('')
         try {
             let screenshot = null
-            try {
-                screenshot = await capturePageScreenshot(overlayRef)
-            } catch (captureErr) {
-                console.warn('Screenshot capture failed:', captureErr)
+            if (includeScreenshot) {
+                try {
+                    setCaptureStatus('Capturing screenshot...')
+                    await waitForIdle(700)
+                    screenshot = await capturePageScreenshot(overlayRef)
+                } catch (captureErr) {
+                    console.warn('Screenshot capture failed:', captureErr)
+                } finally {
+                    setCaptureStatus('')
+                }
             }
             const attachments = []
             for (let i = 0; i < Math.min(files.length, MAX_FILE_UPLOADS); i++) {
@@ -122,6 +155,9 @@ export default function ReportErrorModal({ onClose }) {
                     {status === 'error' && errorText && (
                         <div className={styles.errorMessage}>{errorText}</div>
                     )}
+                    {status === 'loading' && captureStatus && (
+                        <div className={styles.helperText}>{captureStatus}</div>
+                    )}
                     {status !== 'success' && (
                         <>
                             <div className={styles.formGroup}>
@@ -145,8 +181,23 @@ export default function ReportErrorModal({ onClose }) {
                                     }}
                                 />
                                 <p className={styles.helperText} style={{ marginTop: '0.6rem' }}>
-                                    A screenshot of this page will be included with your report.
+                                    Add details so we can reproduce what happened.
                                 </p>
+                                <label
+                                    htmlFor="report-include-screenshot"
+                                    className={styles.checkboxLabel}
+                                    style={{ marginTop: '1rem', cursor: status === 'loading' ? 'not-allowed' : 'pointer' }}
+                                >
+                                    <input
+                                        id="report-include-screenshot"
+                                        type="checkbox"
+                                        checked={includeScreenshot}
+                                        disabled={status === 'loading'}
+                                        onChange={(e) => setIncludeScreenshot(e.target.checked)}
+                                        className={styles.checkboxInput}
+                                    />
+                                    Include a screenshot of the current page
+                                </label>
                             </div>
                             <div className={styles.formGroup}>
                                 <label htmlFor="report-files">Attach files (optional)</label>

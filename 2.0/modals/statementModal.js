@@ -32,5 +32,7 @@ const statementSchema = new mongoose.Schema(
     }
 );
 
+statementSchema.index({ isDeleted: 1, contactId: 1, dateOnFile: -1 });
+
 const Statement = conn.model("Statement", statementSchema, "statements-2.0");
 module.exports = Statement;

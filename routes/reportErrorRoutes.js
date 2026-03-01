@@ -1,9 +1,17 @@
 const express = require("express");
 const router = express.Router();
 const Sentry = require("@sentry/node");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const { tryCatchAsync } = require("../controllers/ErrorController");
 const { protect } = require("../controllers/AuthController");
-const User = require("../modals/userModal");
+const UserErrorReport = require("../2.0/modals/userErrorReportModal");
+const {
+  listUserReports,
+  resolveIssue,
+  getSentryConfig,
+} = require("../services/sentryIssuesService");
 
 /**
  * Parse data URL to Buffer and content type. Returns { data, contentType }.
@@ -27,6 +35,93 @@ function sanitizeFilename(name) {
   return base.replace(/[^\w.\-]/g, "_") || "attachment";
 }
 
+function normalizeAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments
+    .map((item) => {
+      const name = typeof item?.name === "string" ? item.name.trim() : "";
+      const data = typeof item?.data === "string" ? item.data : "";
+      return { name, data };
+    })
+    .filter((item) => item.name || item.data);
+}
+
+function normalizeStatus(status) {
+  const value = String(status || "").trim().toLowerCase();
+  if (!value) return "open";
+  if (value === "resolved") return "closed";
+  if (value === "reviewed by dev" || value === "reviewd by dev") return "reviewed_by_dev";
+  if (value === "in dev") return "in_dev";
+  if (value === "approved by client" || value === "appoved by client") return "approved_by_client";
+
+  const allowed = new Set([
+    "open",
+    "reviewed_by_dev",
+    "in_dev",
+    "fixed",
+    "approved_by_client",
+    "closed",
+  ]);
+  return allowed.has(value) ? value : "open";
+}
+
+function isValidMongoId(value) {
+  return /^[a-fA-F0-9]{24}$/.test(String(value || ""));
+}
+
+const REPORT_FILES_DIR = path.resolve(
+  __dirname,
+  "../../steve_files_do_not_delete/errors"
+);
+
+function ensureReportFilesDir() {
+  if (!fs.existsSync(REPORT_FILES_DIR)) {
+    fs.mkdirSync(REPORT_FILES_DIR, { recursive: true });
+  }
+}
+
+function extensionFromContentType(contentType) {
+  const map = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "application/pdf": "pdf",
+    "text/plain": "txt",
+    "application/json": "json",
+    "application/zip": "zip",
+  };
+  return map[String(contentType || "").toLowerCase()] || "bin";
+}
+
+async function saveScreenshotToDisk(screenshotData) {
+  const parsed = parseDataUrl(screenshotData);
+  if (!parsed || !parsed.data?.length) return null;
+  ensureReportFilesDir();
+  const ext = extensionFromContentType(parsed.contentType);
+  const fileName = `screenshot-${Date.now()}-${crypto.randomUUID()}.${ext}`;
+  const filePath = path.join(REPORT_FILES_DIR, fileName);
+  await fs.promises.writeFile(filePath, parsed.data);
+  return fileName;
+}
+
+async function saveAttachmentsToDisk(attachments) {
+  if (!attachments.length) return [];
+  ensureReportFilesDir();
+  const saved = [];
+  for (const item of attachments) {
+    const parsed = item?.data ? parseDataUrl(item.data) : null;
+    if (!parsed || !parsed.data?.length) continue;
+    const safeName = sanitizeFilename(item?.name || "attachment");
+    const fileName = `${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+    const filePath = path.join(REPORT_FILES_DIR, fileName);
+    await fs.promises.writeFile(filePath, parsed.data);
+    saved.push(fileName);
+  }
+  return saved;
+}
+
 /**
  * POST /api/v1/report-error
  * Auth required (protect). Body: { message: string, screenshot?: string, attachments?: Array<{ name: string, data: string }> }
@@ -39,6 +134,10 @@ router.post(
     const { message, screenshot, attachments } = req.body || {};
     const dsn = process.env.SENTRY_DSN;
     const trimmedMessage = typeof message === "string" ? message.trim() : "";
+    const screenshotData = typeof screenshot === "string" ? screenshot : null;
+    const attachmentList = normalizeAttachments(attachments);
+    const hasScreenshot = Boolean(screenshotData);
+    const userId = req.user?._id ? String(req.user._id) : null;
 
     if (!trimmedMessage) {
       return res.status(400).json({
@@ -47,9 +146,22 @@ router.post(
       });
     }
 
-    const hasScreenshot = Boolean(screenshot && typeof screenshot === "string");
-    const attachmentList = Array.isArray(attachments) ? attachments : [];
-    const userId = req.user?._id ? String(req.user._id) : null;
+    await saveScreenshotToDisk(screenshotData);
+    await saveAttachmentsToDisk(attachmentList);
+
+    await UserErrorReport.create({
+      userId,
+      userEmail: req.user?.email || null,
+      userName: req.user?.name || null,
+      message: trimmedMessage,
+      screenshot: screenshotData,
+      attachments: attachmentList,
+      hasScreenshot,
+      attachmentsCount: attachmentList.length,
+      status: "open",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
 
     if (dsn) {
       Sentry.withScope((scope) => {
@@ -67,8 +179,8 @@ router.post(
         });
         scope.setLevel("warning");
         scope.setFingerprint(["user-report", Date.now().toString(), Math.random().toString(36)]);
-        if (screenshot && typeof screenshot === "string") {
-          const parsed = parseDataUrl(screenshot);
+        if (screenshotData) {
+          const parsed = parseDataUrl(screenshotData);
           if (parsed && parsed.data.length > 0) {
             scope.addAttachment({
               filename: "screenshot.jpg",
@@ -105,6 +217,242 @@ router.post(
     res.status(200).json({
       status: "success",
       message: "Thank you. Your report has been submitted.",
+    });
+  })
+);
+
+/**
+ * GET /api/v1/report-error/db/list
+ * Returns current authenticated user's submitted reports from DB.
+ */
+router.get(
+  "/report-error/db/list",
+  protect,
+  tryCatchAsync(async (req, res) => {
+    const userId = req.user?._id ? String(req.user._id) : null;
+    if (!userId) {
+      return res.status(401).json({
+        status: "error",
+        message: "Not authenticated",
+      });
+    }
+
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const skip = (page - 1) * limit;
+
+    const [items, total] = await Promise.all([
+      UserErrorReport.find({ userId })
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      UserErrorReport.countDocuments({ userId }),
+    ]);
+
+    return res.status(200).json({
+      status: "success",
+      page,
+      limit,
+      total,
+      items: items.map((item) => ({
+        id: String(item._id),
+        userId: item.userId || null,
+        userEmail: item.userEmail || null,
+        userName: item.userName || null,
+        message: item.message || "",
+        screenshot: item.screenshot || null,
+        attachments: Array.isArray(item.attachments) ? item.attachments : [],
+        hasScreenshot: Boolean(item.hasScreenshot),
+        attachmentsCount: Number(item.attachmentsCount || 0),
+        status: normalizeStatus(item.status),
+        createdAt: item.createdAt || null,
+        updatedAt: item.updatedAt || null,
+      })),
+    });
+  })
+);
+
+/**
+ * PATCH /api/v1/report-error/db/:reportId
+ * Edit current authenticated user's DB report (message/status).
+ */
+router.patch(
+  "/report-error/db/:reportId",
+  protect,
+  tryCatchAsync(async (req, res) => {
+    const userId = req.user?._id ? String(req.user._id) : null;
+    if (!userId) {
+      return res.status(401).json({
+        status: "error",
+        message: "Not authenticated",
+      });
+    }
+
+    const reportId = String(req.params.reportId || "");
+    if (!isValidMongoId(reportId)) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Invalid report id.",
+      });
+    }
+    const existing = await UserErrorReport.findOne({ _id: reportId, userId });
+    if (!existing) {
+      return res.status(404).json({
+        status: "fail",
+        message: "Report not found.",
+      });
+    }
+
+    const updates = {};
+    if (typeof req.body?.message === "string") {
+      const trimmedMessage = req.body.message.trim();
+      if (!trimmedMessage) {
+        return res.status(400).json({
+          status: "fail",
+          message: "Message cannot be empty.",
+        });
+      }
+      updates.message = trimmedMessage;
+    }
+    if (typeof req.body?.status === "string") {
+      updates.status = normalizeStatus(req.body.status);
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        status: "fail",
+        message: "No valid fields to update.",
+      });
+    }
+
+    updates.updatedAt = new Date();
+    const updated = await UserErrorReport.findOneAndUpdate(
+      { _id: reportId, userId },
+      updates,
+      { new: true }
+    ).lean();
+
+    return res.status(200).json({
+      status: "success",
+      item: {
+        id: String(updated._id),
+        message: updated.message || "",
+        status: normalizeStatus(updated.status),
+        updatedAt: updated.updatedAt || null,
+      },
+      message: "Report updated.",
+    });
+  })
+);
+
+/**
+ * DELETE /api/v1/report-error/db/:reportId
+ * Delete current authenticated user's DB report.
+ */
+router.delete(
+  "/report-error/db/:reportId",
+  protect,
+  tryCatchAsync(async (req, res) => {
+    const userId = req.user?._id ? String(req.user._id) : null;
+    if (!userId) {
+      return res.status(401).json({
+        status: "error",
+        message: "Not authenticated",
+      });
+    }
+    const reportId = String(req.params.reportId || "");
+    if (!isValidMongoId(reportId)) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Invalid report id.",
+      });
+    }
+    const deleted = await UserErrorReport.findOneAndDelete({ _id: reportId, userId }).lean();
+    if (!deleted) {
+      return res.status(404).json({
+        status: "fail",
+        message: "Report not found.",
+      });
+    }
+    return res.status(200).json({
+      status: "success",
+      message: "Report deleted.",
+    });
+  })
+);
+
+/**
+ * GET /api/v1/report-error/list
+ * Returns current authenticated user's submitted reports from Sentry.
+ */
+router.get(
+  "/report-error/list",
+  protect,
+  tryCatchAsync(async (req, res) => {
+    const userId = req.user?._id ? String(req.user._id) : null;
+    if (!userId) {
+      return res.status(401).json({
+        status: "error",
+        message: "Not authenticated",
+      });
+    }
+
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 20;
+    const includeResolved = String(req.query.includeResolved || "true") !== "false";
+
+    const config = getSentryConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        status: "error",
+        message: config.message,
+      });
+    }
+
+    const result = await listUserReports({
+      userId,
+      page,
+      limit,
+      includeResolved,
+    });
+
+    return res.status(200).json({
+      status: "success",
+      ...result,
+    });
+  })
+);
+
+/**
+ * POST /api/v1/report-error/:issueId/resolve
+ * Resolve a Sentry issue from the app.
+ */
+router.post(
+  "/report-error/:issueId/resolve",
+  protect,
+  tryCatchAsync(async (req, res) => {
+    const issueId = req.params.issueId;
+    if (!issueId) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Issue id is required.",
+      });
+    }
+
+    const config = getSentryConfig();
+    if (!config.ok) {
+      return res.status(503).json({
+        status: "error",
+        message: config.message,
+      });
+    }
+
+    await resolveIssue(issueId);
+
+    return res.status(200).json({
+      status: "success",
+      message: "Issue resolved in Sentry.",
     });
   })
 );

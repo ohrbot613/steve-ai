@@ -42,6 +42,48 @@ function addCurrencyAmount(bucket, currency, amount) {
     bucket[key] = Math.round(((bucket[key] || 0) + numeric) * 100) / 100;
 }
 
+function toStartOfDay(value) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    date.setHours(0, 0, 0, 0);
+    return date;
+}
+
+const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 30000);
+const dashboardResponseCache = new Map();
+
+function getCacheEntry(key) {
+    const cached = dashboardResponseCache.get(key);
+    if (!cached) return null;
+    if (cached.expiresAt <= Date.now()) {
+        dashboardResponseCache.delete(key);
+        return null;
+    }
+    return cached.payload;
+}
+
+function setCacheEntry(key, payload, ttlMs = DASHBOARD_CACHE_TTL_MS) {
+    dashboardResponseCache.set(key, {
+        payload,
+        expiresAt: Date.now() + Math.max(1000, Number(ttlMs) || DASHBOARD_CACHE_TTL_MS),
+    });
+}
+
+function clearDashboardCache() {
+    dashboardResponseCache.clear();
+}
+
+function respondWithMetrics(res, routeName, startedAt, payload, cacheStatus = "miss") {
+    const elapsedMs = Date.now() - startedAt;
+    const payloadBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
+    res.set("Server-Timing", `app;dur=${elapsedMs}`);
+    res.set("X-Response-Bytes", String(payloadBytes));
+    res.set("X-Cache", cacheStatus);
+    console.info(`[dashboard] ${routeName} ${cacheStatus} ${elapsedMs}ms ${payloadBytes}b`);
+    return res.status(200).json(payload);
+}
+
 /**
  * GET /api/v2/dashboard/stats
  * Returns aggregate counts for the 2.0 dashboard:
@@ -215,6 +257,7 @@ exports.getUnmatchedInvoicesExport = tryCatchAsync(async (req, res) => {
  * Then: count of statement ids (s-*), Statement documents for those ids, and Invoice documents for i-* ids with fromXero false.
  */
 exports.getDashboardData = tryCatchAsync(async (req, res) => {
+    const startedAt = Date.now();
     const userId = req.user?._id;
     const log = await ProcessLog.findOne({
         user: userId,
@@ -345,10 +388,11 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
     const allContactIds = [...new Set(invoices.map((inv) => inv.contactId).filter(Boolean))];
     const vendors = allContactIds.length > 0
         ? await Vendor.find({ xeroId: { $in: allContactIds }, isDeleted: { $ne: true }, supplier: true })
-            .select("xeroId name")
+            .select("xeroId name email")
             .lean()
         : [];
     const vendorNameByContactId = new Map(vendors.map((v) => [v.xeroId, v.name || v.xeroId]));
+    const vendorEmailByContactId = new Map(vendors.map((v) => [v.xeroId, v.email || ""]));
     const contactIds = allContactIds.filter((id) => vendorNameByContactId.has(id));
 
     const invoicesWithIssues = fileInvoicesForTab1
@@ -497,6 +541,7 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
         return {
             supplier: vendorNameByContactId.get(contactId) || contactId,
             contactId,
+            supplierEmail: vendorEmailByContactId.get(contactId) || "",
             theySay: Math.round(theySay * 100) / 100,
             xeroSays: Math.round(xeroSays * 100) / 100,
             supplierCurrency,
@@ -509,7 +554,7 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
         };
     });
 
-    res.status(200).json({
+    const payload = {
         success: true,
         log,
         statementCount,
@@ -525,7 +570,8 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
         pairedInvoices,
         contactIdsInPaired: contactIdsReconciled,
         contactIdsInNonPaired,
-    });
+    };
+    return respondWithMetrics(res, "dashboard-data", startedAt, payload);
 });
 
 
@@ -538,6 +584,13 @@ exports.getDashboardData = tryCatchAsync(async (req, res) => {
  * Paid invoices are excluded, and if either side of a pair is paid the whole pair is excluded from Tab 2.
  */
 exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
+    const startedAt = Date.now();
+    const cacheKey = "dashboard-tab-2";
+    const cachedPayload = getCacheEntry(cacheKey);
+    if (cachedPayload) {
+        return respondWithMetrics(res, "dashboard-tab-2", startedAt, cachedPayload, "hit");
+    }
+
     const allInvoices = await Invoice.find({
         isDeleted: { $ne: true },
     })
@@ -546,16 +599,38 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
     const contactIdsFromInvoices = [...new Set(invoices.map((inv) => inv.contactId).filter(Boolean))];
     const vendors = contactIdsFromInvoices.length > 0
         ? await Vendor.find({ xeroId: { $in: contactIdsFromInvoices }, isDeleted: { $ne: true }, supplier: true })
-            .select("xeroId name")
+            .select("xeroId name email")
             .lean()
         : [];
     const vendorNameByContactId = new Map(vendors.map((v) => [v.xeroId, v.name || v.xeroId]));
+    const vendorEmailByContactId = new Map(vendors.map((v) => [v.xeroId, v.email || ""]));
     const validContactIds = new Set(vendorNameByContactId.keys());
     const invoicesWithValidSupplier = invoices.filter((inv) => validContactIds.has(inv.contactId || ""));
 
     const contactIds = [...new Set(invoicesWithValidSupplier.map((inv) => inv.contactId).filter(Boolean))];
+    const statements = contactIds.length > 0
+        ? await Statement.find({
+            contactId: { $in: contactIds },
+            isDeleted: { $ne: true },
+        })
+            .select("contactId dateOnFile")
+            .lean()
+        : [];
+    const latestStatementDateByContactId = new Map();
+    for (const statement of statements) {
+        const contactId = statement?.contactId;
+        if (!contactId) continue;
+        const dateOnFile = toStartOfDay(statement?.dateOnFile);
+        if (!dateOnFile) continue;
+        const currentLatest = latestStatementDateByContactId.get(contactId);
+        if (!currentLatest || dateOnFile.getTime() > currentLatest.getTime()) {
+            latestStatementDateByContactId.set(contactId, dateOnFile);
+        }
+    }
+
     const bySupplier = contactIds.map((contactId) => {
             const supplierInvoices = invoicesWithValidSupplier.filter((inv) => inv.contactId === contactId);
+            const latestStatementDate = latestStatementDateByContactId.get(contactId) || null;
             const includedInvoiceIds = new Set();
             const byInvoiceNumber = new Map();
             for (const inv of supplierInvoices) {
@@ -617,6 +692,17 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
                         const amount = Number(inv.amount) || 0;
                         const amountRounded = Math.round(amount * 100) / 100;
                         const currency = normalizeCurrency(inv.currency) || "GBP";
+                        const invoiceDueDate = toStartOfDay(inv.dueDate);
+                        const isOverdueByStatement = Boolean(
+                            inv.fromXero === true &&
+                            latestStatementDate &&
+                            invoiceDueDate &&
+                            invoiceDueDate.getTime() <= latestStatementDate.getTime()
+                        );
+                        const issueType =
+                            inv.fromXero === true
+                                ? (isOverdueByStatement ? "OVERDUE" : "UNVERIFIED")
+                                : "MISSING FROM XERO";
                         if (inv.fromXero === false) {
                             theySay += amountRounded;
                             addCurrencyAmount(theySayByCurrency, currency, amountRounded);
@@ -625,6 +711,7 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
                             addCurrencyAmount(xeroSaysByCurrency, currency, amountRounded);
                         }
                         unpairedInvoices.push({
+                            issueType,
                             invoiceNumber: inv.invoiceNumber,
                             amount: inv.amount,
                             amountOriginal: amountRounded,
@@ -650,11 +737,13 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
             return {
                 contactId,
                 supplier: vendorNameByContactId.get(contactId) || contactId,
+                supplierEmail: vendorEmailByContactId.get(contactId) || "",
                 invoices: actionableInvoices,
                 pairs,
                 unpairedInvoices,
                 theySay: Math.round(theySay * 100) / 100,
                 xeroSays: Math.round(xeroSays * 100) / 100,
+                latestStatementDate,
                 supplierCurrency,
                 theySayByCurrency,
                 xeroSaysByCurrency,
@@ -662,7 +751,9 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
                 xeroSaysTotals: Object.entries(xeroSaysByCurrency).map(([currency, amount]) => ({ currency, amount })),
             };
         });
-    res.status(200).json({ success: true, bySupplier });
+    const payload = { success: true, bySupplier };
+    setCacheEntry(cacheKey, payload);
+    return respondWithMetrics(res, "dashboard-tab-2", startedAt, payload);
 });
 
 /**
@@ -673,6 +764,13 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
  * Count one amount per pair (do not double-count). Return pair count, pairs overdue, and total amount in GBP.
  */
 exports.getDashboardTab3 = tryCatchAsync(async (req, res) => {
+    const startedAt = Date.now();
+    const cacheKey = "dashboard-tab-3";
+    const cachedPayload = getCacheEntry(cacheKey);
+    if (cachedPayload) {
+        return respondWithMetrics(res, "dashboard-tab-3", startedAt, cachedPayload, "hit");
+    }
+
     const unpaidInvoices = await Invoice.find({
         status: "unpaid",
         isDeleted: { $ne: true },
@@ -681,10 +779,11 @@ exports.getDashboardTab3 = tryCatchAsync(async (req, res) => {
     const allContactIds = [...new Set(unpaidInvoices.map((inv) => inv.contactId).filter(Boolean))];
     const vendors = allContactIds.length > 0
         ? await Vendor.find({ xeroId: { $in: allContactIds }, isDeleted: { $ne: true }, supplier: true })
-            .select("xeroId name")
+            .select("xeroId name email")
             .lean()
         : [];
     const vendorNameByContactId = new Map(vendors.map((v) => [v.xeroId, v.name || v.xeroId]));
+    const vendorEmailByContactId = new Map(vendors.map((v) => [v.xeroId, v.email || ""]));
     const contactIds = allContactIds.filter((id) => vendorNameByContactId.has(id));
 
     const currencies = new Set(
@@ -749,6 +848,7 @@ exports.getDashboardTab3 = tryCatchAsync(async (req, res) => {
             return {
                 contactId,
                 supplier: vendorNameByContactId.get(contactId) || contactId,
+                supplierEmail: vendorEmailByContactId.get(contactId) || "",
                 pairs: sameAmountPairs,
                 pairCount,
                 pairsOverdue,
@@ -760,7 +860,9 @@ exports.getDashboardTab3 = tryCatchAsync(async (req, res) => {
             };
         })
         .filter(Boolean);
-    res.status(200).json({ success: true, bySupplier });
+    const payload = { success: true, bySupplier };
+    setCacheEntry(cacheKey, payload);
+    return respondWithMetrics(res, "dashboard-tab-3", startedAt, payload);
 });
 
 /**
@@ -788,6 +890,7 @@ exports.markInvoicesPaid = tryCatchAsync(async (req, res) => {
         validIds,
         userId
     );
+    clearDashboardCache();
     res.status(200).json({ success: true, modifiedCount: result.modifiedCount });
 });
 
@@ -816,6 +919,7 @@ exports.undoMarkInvoicesPaid = tryCatchAsync(async (req, res) => {
         validIds,
         userId
     );
+    clearDashboardCache();
     res.status(200).json({ success: true, modifiedCount: result.modifiedCount });
 });
 
@@ -824,11 +928,13 @@ exports.undoMarkInvoicesPaid = tryCatchAsync(async (req, res) => {
  * Returns the last successful Xero sync timestamp for the "Last synced" indicator.
  */
 exports.getXeroSyncStatus = tryCatchAsync(async (req, res) => {
+    const startedAt = Date.now();
     const state = await XeroSyncState.findOne().select('lastSuccessAt').lean();
-    res.status(200).json({
+    const payload = {
         success: true,
         lastSyncedAt: state?.lastSuccessAt || null,
-    });
+    };
+    return respondWithMetrics(res, "xero-sync-status", startedAt, payload);
 });
 
 /**
@@ -851,6 +957,7 @@ exports.syncNowWithXero = tryCatchAsync(async (req, res) => {
     }
 
     const state = await XeroSyncState.findOne().select("lastSuccessAt").lean();
+    clearDashboardCache();
     return res.status(200).json({
         success: true,
         message: "Xero sync completed.",
@@ -861,7 +968,7 @@ exports.syncNowWithXero = tryCatchAsync(async (req, res) => {
 
 /**
  * DELETE /api/v2/dashboard/invoices/:id
- * Soft-delete a single invoice, or all file invoices in same statement.
+ * Soft-delete only the specified invoice.
  */
 exports.hardDeleteInvoice = tryCatchAsync(async (req, res) => {
     const { id } = req.params;
@@ -876,38 +983,23 @@ exports.hardDeleteInvoice = tryCatchAsync(async (req, res) => {
     }
 
     const now = new Date();
-    let deletedCount = 0;
-    let cascade = false;
-
-    if (invoice.statementId && mongoose.Types.ObjectId.isValid(String(invoice.statementId))) {
-        const result = await Invoice.updateMany(
-            { statementId: invoice.statementId, fromXero: false, isDeleted: { $ne: true } },
-            { $set: { isDeleted: true, modifiedLast: now } }
-        );
-        deletedCount = result?.modifiedCount ?? 0;
-        cascade = true;
-    } else {
-        const result = await Invoice.updateOne(
-            { _id: id, isDeleted: { $ne: true } },
-            { $set: { isDeleted: true, modifiedLast: now } }
-        );
-        deletedCount = result?.modifiedCount ?? 0;
-    }
+    const result = await Invoice.updateOne(
+        { _id: id, isDeleted: { $ne: true } },
+        { $set: { isDeleted: true, modifiedLast: now } }
+    );
+    const deletedCount = result?.modifiedCount ?? 0;
 
     const userId = req.user?._id ?? null;
     await logProcess(
-        cascade
-            ? `Soft-deleted ${deletedCount} file invoice(s) from statement ${invoice.statementId} (dashboard)`
-            : `Soft-deleted invoice ${id} (dashboard)`,
+        `Soft-deleted invoice ${id} (dashboard)`,
         [id],
         userId
     );
+    clearDashboardCache();
     res.status(200).json({
         success: true,
         deletedCount,
-        cascade,
-        message: cascade
-            ? `${deletedCount} file invoice(s) deleted from this statement.`
-            : "Invoice deleted.",
+        cascade: false,
+        message: "Invoice deleted.",
     });
 });

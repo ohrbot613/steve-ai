@@ -68,6 +68,8 @@ const invoiceSchema = new mongoose.Schema(
 // Speeds up "qualifying suppliers" query: distinct contactId where isDeleted ne true and (unpaid or fromXero false)
 invoiceSchema.index({ isDeleted: 1, status: 1, fromXero: 1 });
 invoiceSchema.index({ contactId: 1, isDeleted: 1 });
+invoiceSchema.index({ isDeleted: 1, contactId: 1, invoiceNumber: 1, fromXero: 1, status: 1 });
+invoiceSchema.index({ isDeleted: 1, invoiceNumber: 1, fromXero: 1, status: 1 });
 
 const Invoice = conn.model("Invoice", invoiceSchema, "invoices-2.0");
 module.exports = Invoice;

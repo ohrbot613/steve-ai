@@ -41,6 +41,73 @@ function formatCurrencyTableAmount(currency, amount) {
   return `${curr} ${formatted}`;
 }
 
+function getTab2UnpairedIssue(inv) {
+  if (inv?.issueType) return String(inv.issueType).toUpperCase();
+  if (inv?.fromXero === true) return "UNVERIFIED";
+  return "MISSING FROM XERO";
+}
+
+function formatIssueForEmail(issue) {
+  const normalized = String(issue || "").trim().toUpperCase();
+  if (!normalized) return "Needs review";
+  if (normalized === "AMOUNT MISMATCH") return "Amount mismatch";
+  if (normalized === "MISSING FROM XERO") return "Missing from our record";
+  if (normalized === "MISSING FROM FILE" || normalized === "UNVERIFIED") return "We never received an invoice from them";
+  if (normalized === "OVERDUE") return "Overdue";
+  if (normalized === "MATCHED") return "Reconciled";
+  if (normalized === "PAID") return "Paid";
+  return normalized
+    .toLowerCase()
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatEmailAmount(currency, amount) {
+  if (amount == null || Number.isNaN(Number(amount))) return "—";
+  return formatCurrencyTableAmount(currency || "GBP", Number(amount));
+}
+
+function buildSupplierEmailDraft(row) {
+  const supplierName = row?.supplier || "Supplier";
+  const to = row?.supplierEmail || "";
+  const subject = `Invoice query - ${supplierName}`;
+  const selected = Array.isArray(row?.selectedInvoices) ? row.selectedInvoices : [];
+  const normalizeCellText = (value) =>
+    String(value ?? "-")
+      .replace(/[\u00A0\u2000-\u200B]/g, " ")
+      .replace(/[^\x20-\x7E]/g, "")
+      .replace(/\|/g, "/")
+      .replace(/\s+/g, " ")
+      .trim() || "-";
+  const rows = selected.map((item) => ({
+    invoice: normalizeCellText(item.invoiceNumber),
+    problem: normalizeCellText(item.problem || "Needs review"),
+    supplier: normalizeCellText(item.supplierAmount),
+    ours: normalizeCellText(item.ourAmount),
+    diff: normalizeCellText(item.difference),
+  }));
+  const tableHeader = "| Invoice # | Problem | Supplier record | Our record | Difference |";
+  const tableDivider = "| --- | --- | --- | --- | --- |";
+  const tableRows = rows.map(
+    (item) =>
+      `| ${item.invoice} | ${item.problem} | ${item.supplier} | ${item.ours} | ${item.diff} |`
+  );
+  const tableBlock =
+    selected.length > 0
+      ? `${tableHeader}\n${tableDivider}\n${tableRows.join("\n")}\n\n`
+      : "";
+  const body =
+    `Dear ${supplierName},\n\n` +
+    `Please review the invoice discrepancies listed below and confirm the correct records:\n\n` +
+    tableBlock +
+    `Please share any corrected invoice references or supporting details so we can reconcile quickly.\n\n` +
+    `Kind regards,\n` +
+    `Steve Accounting Team`;
+  return { to, subject, body };
+}
+
 /**
  * Returns { text } for "Never synced" / "Just now", or { num, unit } for "5 min ago" etc.
  * Used so the number and unit can be rendered in separate spans with a guaranteed gap.
@@ -70,6 +137,206 @@ const ALLOWED_TYPES = [
 ];
 const ALLOWED_EXT = [".pdf", ".xlsx", ".xls"];
 
+function getInvoiceRecordId(record) {
+  if (!record || typeof record !== "object") return null;
+  return String(record._id ?? record.id ?? record.invoiceId ?? "").trim() || null;
+}
+
+function getPairKey(pair) {
+  const fileId = getInvoiceRecordId(pair?.fileInvoice) ?? "none";
+  const xeroId = getInvoiceRecordId(pair?.xeroInvoice) ?? "none";
+  return `${fileId}::${xeroId}`;
+}
+
+function isPairOverdue(pair) {
+  const rawDate =
+    pair?.fileInvoice?.dueDate ||
+    pair?.fileInvoice?.date ||
+    pair?.xeroInvoice?.dueDate ||
+    pair?.xeroInvoice?.date;
+  if (!rawDate) return false;
+  const due = new Date(rawDate);
+  if (Number.isNaN(due.getTime())) return false;
+  due.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return due.getTime() < today.getTime();
+}
+
+function getPairAmount(pair) {
+  const fileAmt = pair?.fileInvoice?.amount;
+  if (fileAmt != null) {
+    const parsed = Number(fileAmt);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const xeroAmt = pair?.xeroInvoice?.amount;
+  if (xeroAmt != null) {
+    const parsed = Number(xeroAmt);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const fallback = Number(pair?.fileAmountGBP);
+  return Number.isFinite(fallback) ? fallback : 0;
+}
+
+function removeInvoiceIdsFromDashboardData(prev, invoiceIds) {
+  if (!prev || !Array.isArray(prev.supplierSummary) || invoiceIds.size === 0) return prev;
+  let removedCount = 0;
+  const supplierSummary = prev.supplierSummary.map((row) => {
+    const invoicesViewAll = Array.isArray(row.invoicesViewAll)
+      ? row.invoicesViewAll.filter((inv) => !invoiceIds.has(getInvoiceRecordId(inv)))
+      : [];
+    const invoicesNeedAttention = Array.isArray(row.invoicesNeedAttention)
+      ? row.invoicesNeedAttention.filter((inv) => !invoiceIds.has(getInvoiceRecordId(inv)))
+      : [];
+    const removedFromRow = Math.max(0, (row.invoicesViewAll?.length ?? 0) - invoicesViewAll.length);
+    removedCount += removedFromRow;
+    return {
+      ...row,
+      invoicesViewAll,
+      invoicesNeedAttention,
+      unpaid: Math.max(0, Number(row.unpaid ?? invoicesViewAll.length) - removedFromRow),
+      issues: invoicesNeedAttention.length,
+    };
+  });
+  const nextInvoicesLength = Number(prev.invoicesLength);
+  return {
+    ...prev,
+    supplierSummary,
+    invoicesLength: Number.isFinite(nextInvoicesLength)
+      ? Math.max(0, nextInvoicesLength - removedCount)
+      : prev.invoicesLength,
+  };
+}
+
+function removeInvoiceIdsFromTab2Data(prev, invoiceIds) {
+  if (!prev || !Array.isArray(prev.bySupplier) || invoiceIds.size === 0) return prev;
+  const bySupplier = prev.bySupplier
+    .map((supplier) => {
+      const invoices = (supplier.invoices || []).filter((inv) => !invoiceIds.has(getInvoiceRecordId(inv)));
+      const unpairedInvoices = (supplier.unpairedInvoices || []).filter(
+        (inv) => !invoiceIds.has(getInvoiceRecordId(inv))
+      );
+      const pairs = (supplier.pairs || []).filter((pair) => {
+        const fileId = getInvoiceRecordId(pair?.fileInvoice);
+        const xeroId = getInvoiceRecordId(pair?.xeroInvoice);
+        return !(invoiceIds.has(fileId) || invoiceIds.has(xeroId));
+      });
+      const theySay = invoices
+        .filter((inv) => inv?.fromXero === false)
+        .reduce((sum, inv) => sum + (Number(inv?.amount) || 0), 0);
+      const xeroSays = invoices
+        .filter((inv) => inv?.fromXero === true)
+        .reduce((sum, inv) => sum + (Number(inv?.amount) || 0), 0);
+      return {
+        ...supplier,
+        invoices,
+        unpairedInvoices,
+        pairs,
+        theySay,
+        xeroSays,
+        unpaid: invoices.length,
+      };
+    })
+    .filter((supplier) => (supplier.invoices?.length ?? 0) > 0 || (supplier.pairs?.length ?? 0) > 0 || (supplier.unpairedInvoices?.length ?? 0) > 0);
+  return { ...prev, bySupplier };
+}
+
+function removeInvoiceIdsFromTab3Data(prev, invoiceIds) {
+  if (!prev || !Array.isArray(prev.bySupplier) || invoiceIds.size === 0) return prev;
+  const bySupplier = prev.bySupplier
+    .map((supplier) => {
+      const pairs = (supplier.pairs || []).filter((pair) => {
+        const fileId = getInvoiceRecordId(pair?.fileInvoice);
+        const xeroId = getInvoiceRecordId(pair?.xeroInvoice);
+        return !(invoiceIds.has(fileId) || invoiceIds.has(xeroId));
+      });
+      const amountOriginal = pairs.reduce((sum, pair) => sum + getPairAmount(pair), 0);
+      return {
+        ...supplier,
+        pairs,
+        pairCount: pairs.length,
+        unpaid: pairs.length,
+        amountOriginal,
+        pairsOverdue: pairs.filter(isPairOverdue).length,
+      };
+    })
+    .filter((supplier) => (supplier.pairs?.length ?? 0) > 0);
+  return { ...prev, bySupplier };
+}
+
+function insertPairsIntoTab3Data(prev, restoreRows) {
+  if (!prev || !Array.isArray(prev.bySupplier) || !Array.isArray(restoreRows) || restoreRows.length === 0) {
+    return prev;
+  }
+  const bySupplier = prev.bySupplier.map((supplier) => ({ ...supplier, pairs: [...(supplier.pairs || [])] }));
+  for (const row of restoreRows) {
+    const restoredPairs = Array.isArray(row?.pairs) ? row.pairs.filter(Boolean) : [];
+    if (restoredPairs.length === 0) continue;
+    const idx = bySupplier.findIndex((supplier) => {
+      if (row?.contactId && supplier?.contactId) return String(supplier.contactId) === String(row.contactId);
+      return String(supplier?.supplier ?? "") === String(row?.supplier ?? "");
+    });
+    if (idx >= 0) {
+      const existing = bySupplier[idx].pairs || [];
+      const seen = new Set(existing.map(getPairKey));
+      const merged = [...existing];
+      for (const pair of restoredPairs) {
+        const key = getPairKey(pair);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(pair);
+      }
+      bySupplier[idx].pairs = merged;
+    } else {
+      bySupplier.push({
+        supplier: row?.supplier ?? "Unknown supplier",
+        contactId: row?.contactId ?? null,
+        supplierCurrency:
+          restoredPairs.find((pair) => pair?.fileInvoice?.currency)?.fileInvoice?.currency ??
+          restoredPairs.find((pair) => pair?.xeroInvoice?.currency)?.xeroInvoice?.currency ??
+          "GBP",
+        pairs: restoredPairs,
+      });
+    }
+  }
+  const normalized = bySupplier
+    .map((supplier) => {
+      const pairs = supplier.pairs || [];
+      const amountOriginal = pairs.reduce((sum, pair) => sum + getPairAmount(pair), 0);
+      return {
+        ...supplier,
+        pairs,
+        pairCount: pairs.length,
+        unpaid: pairs.length,
+        amountOriginal,
+        pairsOverdue: pairs.filter(isPairOverdue).length,
+      };
+    })
+    .filter((supplier) => (supplier.pairs?.length ?? 0) > 0);
+  return { ...prev, bySupplier: normalized };
+}
+
+function applyUploadSuccessToDashboardData(prev, createdCount) {
+  if (!prev || !Number.isFinite(createdCount) || createdCount <= 0) return prev;
+  const nextInvoicesLength = Number(prev.invoicesLength);
+  return {
+    ...prev,
+    invoicesLength: Number.isFinite(nextInvoicesLength)
+      ? nextInvoicesLength + createdCount
+      : prev.invoicesLength,
+    log: prev.log ? { ...prev.log, createdAt: new Date().toISOString() } : prev.log,
+  };
+}
+
+function applyStatementDeleteToDashboardData(prev) {
+  if (!prev) return prev;
+  const current = Number(prev.statementCount);
+  return {
+    ...prev,
+    statementCount: Number.isFinite(current) ? Math.max(0, current - 1) : prev.statementCount,
+  };
+}
+
 function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
   if (tab === "latest") {
     const summary = dashboardData?.supplierSummary;
@@ -90,6 +357,7 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
         return {
           supplier: row.supplier,
           contactId: row.contactId,
+          supplierEmail: row.supplierEmail || "",
           theySay: row.theySay,
           xeroSays: row.xeroSays,
           supplierCurrency: row.supplierCurrency ?? "GBP",
@@ -122,20 +390,26 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
         const issues = pairsAmountMismatch.length + unpairedInvoices.length;
         const hasAmountMismatch = pairsAmountMismatch.length > 0;
         const hasMissingFromXero = unpairedInvoices.some((u) => u.fromXero === false);
-        const hasMissingFromFile = unpairedInvoices.some((u) => u.fromXero === true);
+        const hasOverdue = unpairedInvoices.some((u) => getTab2UnpairedIssue(u) === "OVERDUE");
+        const hasUnverified = unpairedInvoices.some((u) => getTab2UnpairedIssue(u) === "UNVERIFIED");
         const statusParts = [
           hasAmountMismatch ? "AMOUNT MISMATCH" : null,
           hasMissingFromXero ? "MISSING FROM XERO" : null,
-          hasMissingFromFile ? "UNVERIFIED" : null,
+          hasOverdue ? "OVERDUE" : null,
+          hasUnverified ? "UNVERIFIED" : null,
         ].filter(Boolean);
         const statusIssueCounts = {
           amountMismatch: pairsAmountMismatch.length,
           missingFromXero: unpairedInvoices.filter((u) => u.fromXero === false).length,
-          missingFromFile: unpairedInvoices.filter((u) => u.fromXero === true).length,
+          overdue: unpairedInvoices.filter((u) => getTab2UnpairedIssue(u) === "OVERDUE").length,
+          unverified: unpairedInvoices.filter((u) => getTab2UnpairedIssue(u) === "UNVERIFIED").length,
+          // Keep legacy key for latest-tab dot rendering.
+          missingFromFile: unpairedInvoices.filter((u) => getTab2UnpairedIssue(u) === "UNVERIFIED").length,
         };
         return {
           supplier: s.supplier,
           contactId: s.contactId,
+          supplierEmail: s.supplierEmail || "",
           theySay,
           xeroSays,
           supplierCurrency: s.supplierCurrency ?? "GBP",
@@ -180,6 +454,7 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
         return {
           supplier: s.supplier,
           contactId: s.contactId,
+          supplierEmail: s.supplierEmail || "",
           supplierCurrency,
           amountGBP: amountRounded,
           pairCount: s.pairCount ?? pairs.length,
@@ -260,18 +535,19 @@ function useDashboardData() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const refetch = useCallback(async () => {
-    setLoading(true);
+  const refetch = useCallback(async (options = {}) => {
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     try {
       const res = await fetch(DASHBOARD_DATA_URL, { credentials: "include" });
       if (!res.ok) return;
       const json = await res.json();
       if (json.success) setData(json);
-      else setData(null);
+      else if (!silent) setData(null);
     } catch {
-      setData(null);
+      if (!silent) setData(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -279,7 +555,11 @@ function useDashboardData() {
     refetch();
   }, [refetch]);
 
-  return { data, loading, refetch };
+  const updateData = useCallback((updater) => {
+    setData((prev) => (typeof updater === "function" ? updater(prev) : updater));
+  }, []);
+
+  return { data, loading, refetch, updateData };
 }
 
 /** Fetch dashboard tab 2 (unpaid by supplier). */
@@ -287,18 +567,19 @@ function useDashboardTab2() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const refetch = useCallback(async () => {
-    setLoading(true);
+  const refetch = useCallback(async (options = {}) => {
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     try {
       const res = await fetch(DASHBOARD_TAB2_URL, { credentials: "include" });
       if (!res.ok) return;
       const json = await res.json();
       if (json.success) setData(json);
-      else setData(null);
+      else if (!silent) setData(null);
     } catch {
-      setData(null);
+      if (!silent) setData(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -306,7 +587,11 @@ function useDashboardTab2() {
     refetch();
   }, [refetch]);
 
-  return { data: data ?? null, loading, refetch };
+  const updateData = useCallback((updater) => {
+    setData((prev) => (typeof updater === "function" ? updater(prev) : updater));
+  }, []);
+
+  return { data: data ?? null, loading, refetch, updateData };
 }
 
 /** Fetch dashboard tab 3 (reconciled: same-amount pairs only, by supplier). */
@@ -314,18 +599,19 @@ function useDashboardTab3() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const refetch = useCallback(async () => {
-    setLoading(true);
+  const refetch = useCallback(async (options = {}) => {
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     try {
       const res = await fetch(DASHBOARD_TAB3_URL, { credentials: "include" });
       if (!res.ok) return;
       const json = await res.json();
       if (json.success) setData(json);
-      else setData(null);
+      else if (!silent) setData(null);
     } catch {
-      setData(null);
+      if (!silent) setData(null);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -333,7 +619,11 @@ function useDashboardTab3() {
     refetch();
   }, [refetch]);
 
-  return { data: data ?? null, loading, refetch };
+  const updateData = useCallback((updater) => {
+    setData((prev) => (typeof updater === "function" ? updater(prev) : updater));
+  }, []);
+
+  return { data: data ?? null, loading, refetch, updateData };
 }
 
 function formatLogDateTime(createdAt) {
@@ -343,11 +633,26 @@ function formatLogDateTime(createdAt) {
   return `${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} · ${d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true })}`;
 }
 
+function splitFileName(fileName) {
+  const name = String(fileName || "");
+  const lastDot = name.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === name.length - 1) {
+    return { baseName: name || "file", extension: "" };
+  }
+  return {
+    baseName: name.slice(0, lastDot),
+    extension: name.slice(lastDot),
+  };
+}
+
+const DASHBOARD_TABS = ["latest", "attention", "reconciled", "statements"];
+const ACTIVE_TAB_STORAGE_KEY = "simpleApp.activeTab";
+
 export default function SimpleApp() {
-  const { data: dashboardData, loading: lastUploadLoading, refetch: refetchDashboardData } =
+  const { data: dashboardData, loading: lastUploadLoading, refetch: refetchDashboardData, updateData: updateDashboardData } =
     useDashboardData();
-  const { data: tab2Data, refetch: refetchTab2 } = useDashboardTab2();
-  const { data: tab3Data, refetch: refetchTab3 } = useDashboardTab3();
+  const { data: tab2Data, refetch: refetchTab2, updateData: updateTab2Data } = useDashboardTab2();
+  const { data: tab3Data, refetch: refetchTab3, updateData: updateTab3Data } = useDashboardTab3();
   const fileInputRef = useRef(null);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState("");
@@ -357,9 +662,20 @@ export default function SimpleApp() {
   const [manualSupplierSubmitting, setManualSupplierSubmitting] = useState(false);
   const [manualSupplierError, setManualSupplierError] = useState("");
   const [manualSupplierVisible, setManualSupplierVisible] = useState(false);
+  const [predefinedNamesVisible, setPredefinedNamesVisible] = useState(false);
+  const [predefinedNamesFiles, setPredefinedNamesFiles] = useState([]);
+  const [predefinedNamesError, setPredefinedNamesError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
-  const [activeTab, setActiveTab] = useState("attention");
+  const uploadPickerModeRef = useRef("standard");
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const storedTab = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+      return DASHBOARD_TABS.includes(storedTab) ? storedTab : "attention";
+    } catch {
+      return "attention";
+    }
+  });
   const [exportTab2Loading, setExportTab2Loading] = useState(false);
   const [exportTab3Loading, setExportTab3Loading] = useState(false);
   const [exportingSupplierKey, setExportingSupplierKey] = useState(null);
@@ -376,6 +692,8 @@ export default function SimpleApp() {
   const [statementsError, setStatementsError] = useState("");
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [syncNowLoading, setSyncNowLoading] = useState(false);
+  const [feedbackToast, setFeedbackToast] = useState(null);
+  const feedbackToastTimeoutRef = useRef(null);
   const statementsWithInvoices = useMemo(
     () => statementsList.filter((log) => Number(log?.total) > 1),
     [statementsList]
@@ -437,52 +755,8 @@ export default function SimpleApp() {
   };
 
   const tabSort = sortByTab[activeTab];
-  const [tab3OptimisticPaidIds, setTab3OptimisticPaidIds] = useState(() => new Set());
   const tableDataForTab = getTableDataForTab(activeTab, dashboardData, tab2Data, tab3Data);
-  const tableDataForDisplay =
-    activeTab === "reconciled" && tab3OptimisticPaidIds.size > 0
-      ? tableDataForTab
-          .map((row) => {
-            const pairs = (row.pairs || []).filter(
-              (p) =>
-                !tab3OptimisticPaidIds.has(String(p.fileInvoice?._id)) &&
-                !tab3OptimisticPaidIds.has(String(p.xeroInvoice?._id))
-            );
-            if (pairs.length === 0) return null;
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
-            const pairsOverdue = pairs.filter((p) => {
-              const d = p.fileInvoice?.dueDate || p.fileInvoice?.date || p.xeroInvoice?.dueDate || p.xeroInvoice?.date;
-              if (!d) return false;
-              const due = new Date(d);
-              due.setHours(0, 0, 0, 0);
-              return due.getTime() < todayStart.getTime();
-            }).length;
-            const amountGBP = pairs.reduce((sum, p) => {
-              const fileAmt = p?.fileInvoice?.amount;
-              const xeroAmt = p?.xeroInvoice?.amount;
-              const amount =
-                fileAmt != null
-                  ? Number(fileAmt)
-                  : xeroAmt != null
-                    ? Number(xeroAmt)
-                    : Number(p?.fileAmountGBP) || 0;
-              return sum + (Number.isFinite(amount) ? amount : 0);
-            }, 0);
-            const amountGBPRounded = Math.round(amountGBP * 100) / 100;
-            return {
-              ...row,
-              pairs,
-              pairCount: pairs.length,
-              pairsOverdue,
-              amountGBP: amountGBPRounded,
-              theySay: amountGBPRounded,
-              xeroSays: amountGBPRounded,
-              unpaid: pairs.length,
-            };
-          })
-          .filter(Boolean)
-      : tableDataForTab;
+  const tableDataForDisplay = tableDataForTab;
   const sortedTableData = sortTableRows(
     tableDataForDisplay,
     tabSort.column,
@@ -501,6 +775,14 @@ export default function SimpleApp() {
       : sortedTableData;
   useEffect(() => {
     if (activeTab === "attention") setTab2Page(1);
+  }, [activeTab]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTab);
+    } catch {
+      // Ignore storage failures (private mode, blocked storage, etc.)
+    }
   }, [activeTab]);
 
   const refetchStatementsList = useCallback(async () => {
@@ -555,13 +837,39 @@ export default function SimpleApp() {
     void refetchStatementsList();
   }, [activeTab, refetchStatementsList]);
 
+  const backgroundRevalidateTimeoutRef = useRef(null);
+  const revalidateDashboardInBackground = useCallback((options = {}) => {
+    const includeStatements = options.includeStatements === true;
+    if (backgroundRevalidateTimeoutRef.current) {
+      clearTimeout(backgroundRevalidateTimeoutRef.current);
+    }
+    backgroundRevalidateTimeoutRef.current = setTimeout(() => {
+      backgroundRevalidateTimeoutRef.current = null;
+      const tasks = [
+        refetchDashboardData({ silent: true }),
+        refetchTab2({ silent: true }),
+        refetchTab3({ silent: true }),
+      ];
+      if (includeStatements) tasks.push(refetchStatementsList());
+      void Promise.allSettled(tasks);
+    }, 300);
+  }, [refetchDashboardData, refetchStatementsList, refetchTab2, refetchTab3]);
+
   const [expandedRows, setExpandedRows] = useState(() => new Set());
   const [expandedStatementSuppliers, setExpandedStatementSuppliers] = useState(() => new Set());
   const toggleRowExpanded = (supplier) => {
     setExpandedRows((prev) => {
       const next = new Set(prev);
-      if (next.has(supplier)) next.delete(supplier);
-      else next.add(supplier);
+      if (next.has(supplier)) {
+        next.delete(supplier);
+        setTab1SelectedByRow((prevSelected) => {
+          const key = String(supplier);
+          if (!(key in prevSelected)) return prevSelected;
+          const nextSelected = { ...prevSelected };
+          delete nextSelected[key];
+          return nextSelected;
+        });
+      } else next.add(supplier);
       return next;
     });
   };
@@ -577,6 +885,13 @@ export default function SimpleApp() {
     setExpandedRows((prev) => {
       const next = new Set(prev);
       next.delete(supplier);
+      return next;
+    });
+    setTab1SelectedByRow((prev) => {
+      const key = String(supplier);
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
       return next;
     });
   };
@@ -609,11 +924,53 @@ export default function SimpleApp() {
   };
 
   // Tab 3 (reconciled): selected invoice ids for bulk actions (e.g. Paid)
+  const [tab1SelectedByRow, setTab1SelectedByRow] = useState(() => ({}));
   const [tab3SelectedIds, setTab3SelectedIds] = useState(() => new Set());
   const [deletingInvoiceId, setDeletingInvoiceId] = useState(null);
   const [deletingLatestRowKey, setDeletingLatestRowKey] = useState(null);
   const [deletingStatementId, setDeletingStatementId] = useState(null);
   const [hidePaidAndMatchedInTab1, setHidePaidAndMatchedInTab1] = useState(false);
+  const toggleTab1InvoiceSelection = (rowKey, invoiceId) => {
+    const rowKeyStr = String(rowKey);
+    const invoiceIdStr = String(invoiceId);
+    setTab1SelectedByRow((prev) => {
+      const current = prev[rowKeyStr] ?? new Set();
+      const nextSet = new Set(current);
+      if (nextSet.has(invoiceIdStr)) nextSet.delete(invoiceIdStr);
+      else nextSet.add(invoiceIdStr);
+      if (nextSet.size === 0) {
+        if (!(rowKeyStr in prev)) return prev;
+        const next = { ...prev };
+        delete next[rowKeyStr];
+        return next;
+      }
+      return { ...prev, [rowKeyStr]: nextSet };
+    });
+  };
+  const toggleTab1SelectAllForRow = (rowKey, invoiceIds) => {
+    const rowKeyStr = String(rowKey);
+    const ids = invoiceIds.map((id) => String(id));
+    setTab1SelectedByRow((prev) => {
+      const current = prev[rowKeyStr] ?? new Set();
+      const allSelected = ids.length > 0 && ids.every((id) => current.has(id));
+      if (allSelected || ids.length === 0) {
+        if (!(rowKeyStr in prev)) return prev;
+        const next = { ...prev };
+        delete next[rowKeyStr];
+        return next;
+      }
+      return { ...prev, [rowKeyStr]: new Set(ids) };
+    });
+  };
+  const clearTab1SelectionForRow = (rowKey) => {
+    const rowKeyStr = String(rowKey);
+    setTab1SelectedByRow((prev) => {
+      if (!(rowKeyStr in prev)) return prev;
+      const next = { ...prev };
+      delete next[rowKeyStr];
+      return next;
+    });
+  };
   const toggleTab3InvoiceSelection = (id) => {
     setTab3SelectedIds((prev) => {
       const next = new Set(prev);
@@ -636,8 +993,26 @@ export default function SimpleApp() {
   };
 
   // Toast after marking invoices paid (bottom right, Undo for 5s)
-  const [tab3PaidToast, setTab3PaidToast] = useState({ visible: false, invoiceIds: [], message: "" });
+  const [tab3PaidToast, setTab3PaidToast] = useState({
+    visible: false,
+    invoiceIds: [],
+    message: "",
+    restoreRows: [],
+  });
   const tab3PaidToastTimeoutRef = useRef(null);
+  const showFeedback = useCallback((message, type = "error") => {
+    if (!message) return;
+    setFeedbackToast({ message, type });
+    if (feedbackToastTimeoutRef.current) clearTimeout(feedbackToastTimeoutRef.current);
+    feedbackToastTimeoutRef.current = setTimeout(() => {
+      setFeedbackToast(null);
+      feedbackToastTimeoutRef.current = null;
+    }, 4500);
+  }, []);
+  const emailDraft = useMemo(
+    () => (emailModalRow ? buildSupplierEmailDraft(emailModalRow) : { to: "", subject: "", body: "" }),
+    [emailModalRow]
+  );
 
   const handleMarkPaid = useCallback(async (row, indices, rowKey) => {
     if (!row?.pairs?.length) return;
@@ -647,20 +1022,13 @@ export default function SimpleApp() {
       return [String(p.fileInvoice._id), String(p.xeroInvoice._id)];
     });
     if (invoiceIds.length === 0) return;
-    setTab3OptimisticPaidIds((prev) => new Set([...prev, ...invoiceIds]));
     const pairCount = indices.length;
     const message = pairCount === 1 ? "1 invoice marked as paid" : `${pairCount} invoices marked as paid`;
-    setTab3PaidToast({ visible: true, invoiceIds, message });
     setTab3SelectedIds((prev) => {
       const next = new Set(prev);
       indices.forEach((j) => next.delete(`${rowKey}-${j}`));
       return next;
     });
-    if (tab3PaidToastTimeoutRef.current) clearTimeout(tab3PaidToastTimeoutRef.current);
-    tab3PaidToastTimeoutRef.current = setTimeout(() => {
-      setTab3PaidToast((t) => ({ ...t, visible: false }));
-      tab3PaidToastTimeoutRef.current = null;
-    }, 5000);
     try {
       const res = await fetch("/api/v2/dashboard/mark-invoices-paid", {
         method: "POST",
@@ -669,30 +1037,29 @@ export default function SimpleApp() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        setTab3OptimisticPaidIds((prev) => {
-          const next = new Set(prev);
-          invoiceIds.forEach((id) => next.delete(id));
-          return next;
-        });
-        if (tab3PaidToastTimeoutRef.current) {
-          clearTimeout(tab3PaidToastTimeoutRef.current);
-          tab3PaidToastTimeoutRef.current = null;
-        }
-        setTab3PaidToast((t) => ({ ...t, visible: false }));
         throw new Error(data.message || "Failed to mark as paid");
       }
-      refetchTab3().then(() => {
-        setTab3OptimisticPaidIds((prev) => {
-          const next = new Set(prev);
-          invoiceIds.forEach((id) => next.delete(id));
-          return next;
-        });
+      const restorePairs = indices.map((j) => row.pairs[j]).filter(Boolean);
+      setTab3PaidToast({
+        visible: true,
+        invoiceIds,
+        message,
+        restoreRows: restorePairs.length
+          ? [{ supplier: row?.supplier, contactId: row?.contactId, pairs: restorePairs }]
+          : [],
       });
+      if (tab3PaidToastTimeoutRef.current) clearTimeout(tab3PaidToastTimeoutRef.current);
+      tab3PaidToastTimeoutRef.current = setTimeout(() => {
+        setTab3PaidToast((t) => ({ ...t, visible: false }));
+        tab3PaidToastTimeoutRef.current = null;
+      }, 5000);
+      updateTab3Data((prev) => removeInvoiceIdsFromTab3Data(prev, new Set(invoiceIds)));
+      revalidateDashboardInBackground();
     } catch (err) {
       console.error(err);
-      alert(err.message || "Failed to mark as paid");
+      showFeedback(err.message || "Failed to mark as paid");
     }
-  }, [refetchTab3]);
+  }, [revalidateDashboardInBackground, showFeedback, updateTab3Data]);
 
   const handleHardDeleteInvoice = useCallback(async (invoiceId) => {
     if (!invoiceId) return;
@@ -702,16 +1069,20 @@ export default function SimpleApp() {
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message || "Failed to delete invoice");
       if ((data?.deletedCount ?? 0) > 1) {
-        alert(data.message || `${data.deletedCount} file invoice(s) deleted from this statement.`);
+        showFeedback(data.message || `${data.deletedCount} file invoice(s) deleted from this statement.`, "success");
       }
-      await Promise.all([refetchDashboardData(), refetchTab2(), refetchTab3()]);
+      const deletedIds = new Set([String(invoiceId)]);
+      updateDashboardData((prev) => removeInvoiceIdsFromDashboardData(prev, deletedIds));
+      updateTab2Data((prev) => removeInvoiceIdsFromTab2Data(prev, deletedIds));
+      updateTab3Data((prev) => removeInvoiceIdsFromTab3Data(prev, deletedIds));
+      revalidateDashboardInBackground();
     } catch (err) {
       console.error(err);
-      alert(err.message || "Failed to delete invoice");
+      showFeedback(err.message || "Failed to delete invoice");
     } finally {
       setDeletingInvoiceId(null);
     }
-  }, [refetchDashboardData, refetchTab2, refetchTab3]);
+  }, [revalidateDashboardInBackground, showFeedback, updateDashboardData, updateTab2Data, updateTab3Data]);
 
   const handleDeleteLatestFileOnlyInvoices = useCallback(async (rowKey, supplierName, invoiceIds) => {
     if (!rowKey || !Array.isArray(invoiceIds) || invoiceIds.length === 0) return;
@@ -740,16 +1111,27 @@ export default function SimpleApp() {
       const failed = results.filter((r) => r.status === "rejected");
       if (failed.length > 0) {
         const firstError = failed[0]?.reason?.message || "Failed to delete some invoices";
-        alert(`${firstError} (${failed.length} failed)`);
+        showFeedback(`${firstError} (${failed.length} failed)`);
       }
-      await Promise.all([refetchDashboardData(), refetchTab2(), refetchTab3()]);
+      const settledIds = results
+        .filter((r) => r.status === "fulfilled")
+        .map((r) => String(r.value?.invoiceId || ""))
+        .filter(Boolean);
+      if (settledIds.length > 0) {
+        const deletedIds = new Set(settledIds);
+        updateDashboardData((prev) => removeInvoiceIdsFromDashboardData(prev, deletedIds));
+        updateTab2Data((prev) => removeInvoiceIdsFromTab2Data(prev, deletedIds));
+        updateTab3Data((prev) => removeInvoiceIdsFromTab3Data(prev, deletedIds));
+      }
+      revalidateDashboardInBackground();
+      clearTab1SelectionForRow(rowKey);
     } catch (err) {
       console.error(err);
-      alert(err.message || "Failed to delete invoices");
+      showFeedback(err.message || "Failed to delete invoices");
     } finally {
       setDeletingLatestRowKey(null);
     }
-  }, [refetchDashboardData, refetchTab2, refetchTab3]);
+  }, [clearTab1SelectionForRow, revalidateDashboardInBackground, showFeedback, updateDashboardData, updateTab2Data, updateTab3Data]);
 
   const handleDeleteStatement = useCallback(async (statementId) => {
     if (!statementId) return;
@@ -761,32 +1143,25 @@ export default function SimpleApp() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message || "Failed to delete statement");
-      await Promise.all([
-        refetchStatementsList(),
-        refetchDashboardData(),
-        refetchTab2(),
-        refetchTab3(),
-      ]);
+      const statementIdStr = String(statementId);
+      setStatementsList((prev) => prev.filter((log) => String(log?._id ?? "") !== statementIdStr));
+      updateDashboardData((prev) => applyStatementDeleteToDashboardData(prev));
+      revalidateDashboardInBackground({ includeStatements: true });
     } catch (err) {
       console.error(err);
-      alert(err.message || "Failed to delete statement");
+      showFeedback(err.message || "Failed to delete statement");
     } finally {
       setDeletingStatementId(null);
     }
-  }, [refetchStatementsList, refetchDashboardData, refetchTab2, refetchTab3]);
+  }, [revalidateDashboardInBackground, showFeedback, updateDashboardData]);
 
   const handleUndoPaid = useCallback(async () => {
-    const { invoiceIds } = tab3PaidToast;
+    const { invoiceIds, restoreRows } = tab3PaidToast;
     if (!invoiceIds?.length) return;
     if (tab3PaidToastTimeoutRef.current) {
       clearTimeout(tab3PaidToastTimeoutRef.current);
       tab3PaidToastTimeoutRef.current = null;
     }
-    setTab3OptimisticPaidIds((prev) => {
-      const next = new Set(prev);
-      invoiceIds.forEach((id) => next.delete(id));
-      return next;
-    });
     setTab3PaidToast((t) => ({ ...t, visible: false }));
     try {
       const res = await fetch("/api/v2/dashboard/undo-mark-invoices-paid", {
@@ -796,24 +1171,32 @@ export default function SimpleApp() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        setTab3OptimisticPaidIds((prev) => new Set([...prev, ...invoiceIds]));
         throw new Error(data.message || "Failed to undo");
       }
-      refetchTab3();
+      if (Array.isArray(restoreRows) && restoreRows.length > 0) {
+        updateTab3Data((prev) => insertPairsIntoTab3Data(prev, restoreRows));
+      }
+      revalidateDashboardInBackground();
     } catch (err) {
       console.error(err);
-      alert(err.message || "Failed to undo");
+      showFeedback(err.message || "Failed to undo");
     }
-  }, [tab3PaidToast.invoiceIds, refetchTab3]);
+  }, [revalidateDashboardInBackground, showFeedback, tab3PaidToast, updateTab3Data]);
 
   useEffect(() => {
     return () => {
       if (tab3PaidToastTimeoutRef.current) clearTimeout(tab3PaidToastTimeoutRef.current);
+      if (backgroundRevalidateTimeoutRef.current) clearTimeout(backgroundRevalidateTimeoutRef.current);
+      if (feedbackToastTimeoutRef.current) clearTimeout(feedbackToastTimeoutRef.current);
     };
   }, []);
 
   useEffect(() => {
-    const openPicker = () => fileInputRef.current?.click();
+    const openPicker = (event) => {
+      uploadPickerModeRef.current =
+        event?.detail?.mode === "predefined-names" ? "predefined-names" : "standard";
+      fileInputRef.current?.click();
+    };
     window.addEventListener("simple-app-open-upload", openPicker);
     return () => window.removeEventListener("simple-app-open-upload", openPicker);
   }, []);
@@ -824,7 +1207,7 @@ export default function SimpleApp() {
       const data = await res.json();
       if (data?.lastSyncedAt) setLastSyncedAt(new Date(data.lastSyncedAt));
       else setLastSyncedAt(null);
-    } catch (_) {
+    } catch {
       // Silent on error — non-critical indicator
     }
   }, []);
@@ -847,11 +1230,11 @@ export default function SimpleApp() {
       if (data?.lastSyncedAt) setLastSyncedAt(new Date(data.lastSyncedAt));
       await Promise.all([refetchDashboardData(), refetchTab2(), refetchTab3(), refreshXeroSyncStatus()]);
     } catch (err) {
-      alert(err.message || "Failed to sync with Xero");
+      showFeedback(err.message || "Failed to sync with Xero");
     } finally {
       setSyncNowLoading(false);
     }
-  }, [refetchDashboardData, refetchTab2, refetchTab3, refreshXeroSyncStatus]);
+  }, [refetchDashboardData, refetchTab2, refetchTab3, refreshXeroSyncStatus, showFeedback]);
 
   useEffect(() => {
     window.dispatchEvent(
@@ -901,7 +1284,7 @@ export default function SimpleApp() {
   const exportTab2IssuesToExcel = useCallback(async () => {
     const bySupplier = tab2Data?.bySupplier;
     if (!Array.isArray(bySupplier) || bySupplier.length === 0) {
-      alert("No data to export");
+      showFeedback("No data to export");
       return;
     }
     setExportTab2Loading(true);
@@ -932,7 +1315,7 @@ export default function SimpleApp() {
           const dueOrDate = u.dueDate || u.date;
           rows.push({
             supplier,
-            issue: u.fromXero ? "UNVERIFIED" : "MISSING FROM XERO",
+            issue: getTab2UnpairedIssue(u),
             invoiceNumber: u.invoiceNumber || "",
             fileAmount: u.fromXero ? "" : amtOrig,
             fileCurrency: u.fromXero ? "" : curr,
@@ -943,7 +1326,7 @@ export default function SimpleApp() {
         }
       }
       if (rows.length === 0) {
-        alert("No issues to export");
+        showFeedback("No issues to export");
         return;
       }
       const headers = [
@@ -959,11 +1342,11 @@ export default function SimpleApp() {
       await exportToExcel(rows, headers, `tab2-issues-${new Date().toISOString().slice(0, 10)}`);
     } catch (err) {
       console.error(err);
-      alert("Export failed");
+      showFeedback("Export failed");
     } finally {
       setExportTab2Loading(false);
     }
-  }, [tab2Data]);
+  }, [showFeedback, tab2Data]);
 
   const exportSingleSupplierToExcel = useCallback(async (row) => {
     const supplier = row.supplier || row.contactId || "";
@@ -991,7 +1374,7 @@ export default function SimpleApp() {
       const dueOrDate = u.dueDate || u.date;
       rows.push({
         supplier,
-        issue: u.fromXero ? "UNVERIFIED" : "MISSING FROM XERO",
+        issue: getTab2UnpairedIssue(u),
         invoiceNumber: u.invoiceNumber || "",
         fileAmount: u.fromXero ? "" : amtOrig,
         fileCurrency: u.fromXero ? "" : curr,
@@ -1001,7 +1384,7 @@ export default function SimpleApp() {
       });
     }
     if (rows.length === 0) {
-      alert("No issues to export for this supplier");
+      showFeedback("No issues to export for this supplier");
       return;
     }
     const rowKey = row.contactId ?? row.supplier;
@@ -1021,16 +1404,16 @@ export default function SimpleApp() {
       await exportToExcel(rows, headers, `tab2-issues-${slug}-${new Date().toISOString().slice(0, 10)}`);
     } catch (err) {
       console.error(err);
-      alert("Export failed");
+      showFeedback("Export failed");
     } finally {
       setExportingSupplierKey(null);
     }
-  }, []);
+  }, [showFeedback]);
 
   const exportTab3ToExcel = useCallback(async () => {
     const bySupplier = tab3Data?.bySupplier;
     if (!Array.isArray(bySupplier) || bySupplier.length === 0) {
-      alert("No reconciled data to export");
+      showFeedback("No reconciled data to export");
       return;
     }
     setExportTab3Loading(true);
@@ -1058,7 +1441,7 @@ export default function SimpleApp() {
         }
       }
       if (rows.length === 0) {
-        alert("No reconciled invoices to export");
+        showFeedback("No reconciled invoices to export");
         return;
       }
       const headers = [
@@ -1073,17 +1456,17 @@ export default function SimpleApp() {
       await exportToExcel(rows, headers, `tab3-reconciled-${new Date().toISOString().slice(0, 10)}`);
     } catch (err) {
       console.error(err);
-      alert("Export failed");
+      showFeedback("Export failed");
     } finally {
       setExportTab3Loading(false);
     }
-  }, [tab3Data]);
+  }, [showFeedback, tab3Data]);
 
   const exportSingleSupplierTab3ToExcel = useCallback(async (row) => {
     const supplier = row.supplier || row.contactId || "";
     const pairs = row.pairs || [];
     if (pairs.length === 0) {
-      alert("No reconciled invoices to export for this supplier");
+      showFeedback("No reconciled invoices to export for this supplier");
       return;
     }
     const rowKey = row.contactId ?? row.supplier;
@@ -1121,15 +1504,38 @@ export default function SimpleApp() {
       await exportToExcel(rows, headers, `tab3-reconciled-${slug}-${new Date().toISOString().slice(0, 10)}`);
     } catch (err) {
       console.error(err);
-      alert("Export failed");
+      showFeedback("Export failed");
     } finally {
       setExportingSupplierKey(null);
     }
-  }, []);
+  }, [showFeedback]);
 
   function handleFileSelect(e) {
     const files = e.target.files;
-    if (files?.length > 0) handleFileUpload(files);
+    const selectedMode =
+      uploadPickerModeRef.current === "predefined-names"
+        ? "predefined-names"
+        : "standard";
+    uploadPickerModeRef.current = "standard";
+
+    if (files?.length > 0) {
+      if (selectedMode === "predefined-names") {
+        const entries = Array.from(files).map((file, idx) => {
+          const { extension } = splitFileName(file.name);
+          return {
+            id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+            file,
+            extension,
+            enteredName: "",
+          };
+        });
+        setPredefinedNamesFiles(entries);
+        setPredefinedNamesError("");
+        setPredefinedNamesVisible(true);
+      } else {
+        handleFileUpload(files, { uploadMode: selectedMode });
+      }
+    }
     e.target.value = "";
   }
 
@@ -1238,10 +1644,13 @@ export default function SimpleApp() {
         const currentLine = `${fileLabel} continued.${createdCount > 0 ? ` ${createdCount} invoice(s) saved.` : ""}`;
         return prev ? `${prev} ${currentLine}` : currentLine;
       });
+      switchToLatestBatchTab();
+      const createdCount = Number(data.createdCount ?? (data.created?.length ?? 0));
+      if (createdCount > 0) {
+        updateDashboardData((prev) => applyUploadSuccessToDashboardData(prev, createdCount));
+      }
       popManualSupplierQueue(true);
-      refetchDashboardData();
-      refetchTab2();
-      refetchTab3();
+      revalidateDashboardInBackground();
     } catch (err) {
       setManualSupplierError(getUploadErrorMessage(err?.message, "network"));
       setManualSupplierVisible(true);
@@ -1262,8 +1671,14 @@ export default function SimpleApp() {
     setManualSupplierError("");
   }
 
-  async function handleFileUpload(files) {
+  function switchToLatestBatchTab() {
+    setActiveTab("latest");
+  }
+
+  async function handleFileUpload(files, options = {}) {
     if (!files?.length) return;
+    const uploadMode = options.uploadMode || uploadPickerModeRef.current;
+    uploadPickerModeRef.current = "standard";
     const fileArray = Array.from(files);
     const invalid = fileArray.filter((f) => {
       const ext = f.name.toLowerCase().slice(f.name.lastIndexOf("."));
@@ -1277,7 +1692,11 @@ export default function SimpleApp() {
     }
     setUploadLoading(true);
     setUploadError("");
-    setUploadSuccess("");
+    setUploadSuccess(
+      uploadMode === "predefined-names"
+        ? "Predefined names applied. Uploading now..."
+        : ""
+    );
     setManualSupplierQueue([]);
     setManualSupplierInput("");
     setManualSupplierError("");
@@ -1329,6 +1748,7 @@ export default function SimpleApp() {
             setUploadSuccess(
               `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
             );
+            switchToLatestBatchTab();
             const genericErrorCount = failedErrors.length;
             const unresolvedCount = unresolvedErrors.length;
             if (genericErrorCount > 0 || unresolvedCount > 0) {
@@ -1342,6 +1762,7 @@ export default function SimpleApp() {
           setUploadSuccess(
             `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
           );
+          switchToLatestBatchTab();
         }
         if (totalCreated > 0) {
           confetti({
@@ -1352,10 +1773,9 @@ export default function SimpleApp() {
             decay: 0.9,
             ticks: 100,
           });
+          updateDashboardData((prev) => applyUploadSuccessToDashboardData(prev, totalCreated));
         }
-        refetchDashboardData();
-        refetchTab2();
-        refetchTab3();
+        revalidateDashboardInBackground();
       } else {
         const formData = new FormData();
         formData.append("file", fileArray[0]);
@@ -1382,6 +1802,7 @@ export default function SimpleApp() {
         setUploadSuccess(
           `"${fileArray[0].name}" processed.${createdCount > 0 ? ` ${createdCount} invoice(s) saved.` : ""}`
         );
+        switchToLatestBatchTab();
         if (createdCount > 0) {
           confetti({
             particleCount: 80,
@@ -1391,16 +1812,50 @@ export default function SimpleApp() {
             decay: 0.9,
             ticks: 100,
           });
+          updateDashboardData((prev) => applyUploadSuccessToDashboardData(prev, createdCount));
         }
-        refetchDashboardData();
-        refetchTab2();
-        refetchTab3();
+        revalidateDashboardInBackground();
       }
     } catch (err) {
       setUploadError(getUploadErrorMessage(err?.message, "network"));
     } finally {
       setUploadLoading(false);
     }
+  }
+
+  async function handlePredefinedNamesContinue() {
+    if (!predefinedNamesFiles.length || uploadLoading) return;
+    const invalid = predefinedNamesFiles.find(
+      (entry) => !String(entry.enteredName || "").trim()
+    );
+    if (invalid) {
+      setPredefinedNamesError("Please enter a name for every file.");
+      return;
+    }
+
+    const renamedFiles = predefinedNamesFiles.map((entry) => {
+      const typed = String(entry.enteredName || "").trim();
+      const extension = entry.extension || "";
+      const finalName = typed.toLowerCase().endsWith(extension.toLowerCase())
+        ? typed
+        : `${typed}${extension}`;
+      return new File([entry.file], finalName, {
+        type: entry.file.type,
+        lastModified: entry.file.lastModified,
+      });
+    });
+
+    setPredefinedNamesVisible(false);
+    setPredefinedNamesError("");
+    setPredefinedNamesFiles([]);
+    await handleFileUpload(renamedFiles, { uploadMode: "predefined-names" });
+  }
+
+  function handlePredefinedNamesCancel() {
+    if (uploadLoading) return;
+    setPredefinedNamesVisible(false);
+    setPredefinedNamesError("");
+    setPredefinedNamesFiles([]);
   }
 
   const totals = [
@@ -1624,7 +2079,7 @@ export default function SimpleApp() {
             role="tablist"
             aria-label="Batch views"
             onKeyDown={(e) => {
-              const tabs = ["latest", "attention", "reconciled", "statements"];
+              const tabs = DASHBOARD_TABS;
               const i = tabs.indexOf(activeTab);
               if (e.key === "ArrowRight" && i < tabs.length - 1) {
                 e.preventDefault();
@@ -1664,7 +2119,7 @@ export default function SimpleApp() {
               className={`${styles.tab} ${activeTab === "attention" ? styles.tabActive : ""}`}
               onClick={() => setActiveTab("attention")}
             >
-              Supplers
+              Suppliers
             </button>
             <button
               type="button"
@@ -2075,7 +2530,7 @@ export default function SimpleApp() {
                                 xeroCurrencyOriginal: u.xeroCurrencyOriginal ?? (u.fromXero ? (u.currency ?? "GBP") : null),
                                 differenceOriginal: null,
                                 differenceOriginalCurrency: null,
-                                issue: u.fromXero ? "UNVERIFIED" : "MISSING FROM XERO",
+                                issue: getTab2UnpairedIssue(u),
                                 supplierAmt: u.fromXero ? null : amt,
                                 xeroAmt: u.fromXero ? amt : null,
                                 difference: amt,
@@ -2135,7 +2590,62 @@ export default function SimpleApp() {
                         ? detailRows.filter((inv) => inv.issue !== "paid" && inv.issue !== "Matched" && inv.status !== "Paid")
                         : detailRows;
                     const sortedDetailRows = sortDetailRows(detailRowsFiltered, detailTableSort.column, detailTableSort.dir);
+                    const tab1SelectableDetailIds =
+                      activeTab === "latest" || activeTab === "attention"
+                        ? sortedDetailRows
+                            .map((inv) => inv.deleteInvoiceId ?? inv._id)
+                            .filter(Boolean)
+                            .map((id) => String(id))
+                        : [];
+                    const tab1SelectedSet =
+                      activeTab === "latest" || activeTab === "attention"
+                        ? (tab1SelectedByRow[String(rowKey)] ?? new Set())
+                        : new Set();
+                    const tab1SelectedIdsForDelete =
+                      activeTab === "latest" || activeTab === "attention"
+                        ? tab1SelectableDetailIds.filter((id) => tab1SelectedSet.has(id))
+                        : [];
+                    const tab1RowHasSelection = tab1SelectedIdsForDelete.length > 0;
+                    const tab1SelectAllChecked =
+                      tab1SelectableDetailIds.length > 0 &&
+                      tab1SelectableDetailIds.every((id) => tab1SelectedSet.has(id));
+                    const selectedInvoicesForEmail =
+                      activeTab === "latest" || activeTab === "attention"
+                        ? sortedDetailRows
+                            .filter((inv) => {
+                              const id = inv.deleteInvoiceId ?? inv._id;
+                              return id != null && tab1SelectedSet.has(String(id));
+                            })
+                            .map((inv) => {
+                              const supplierCurrency = inv.supplierCurrencyOriginal ?? inv.currency ?? "GBP";
+                              const xeroCurrency = inv.xeroCurrencyOriginal ?? inv.currency ?? "GBP";
+                              const diffCurrency =
+                                inv.differenceOriginalCurrency ??
+                                inv.supplierCurrencyOriginal ??
+                                inv.xeroCurrencyOriginal ??
+                                inv.currency ??
+                                "GBP";
+                              const supplierAmount =
+                                inv.supplierAmountOriginal != null ? Number(inv.supplierAmountOriginal) : inv.supplierAmt != null ? Number(inv.supplierAmt) : null;
+                              const xeroAmount =
+                                inv.xeroAmountOriginal != null ? Number(inv.xeroAmountOriginal) : inv.xeroAmt != null ? Number(inv.xeroAmt) : null;
+                              const diffAmount =
+                                inv.differenceOriginal != null ? Number(inv.differenceOriginal) : inv.difference != null ? Number(inv.difference) : null;
+                              const diffText =
+                                diffAmount == null || Number.isNaN(diffAmount)
+                                  ? "—"
+                                  : `${diffAmount < 0 ? "-" : ""}${formatEmailAmount(diffCurrency, Math.abs(diffAmount))}`;
+                              return {
+                                invoiceNumber: inv.invoiceNumber || "—",
+                                problem: formatIssueForEmail(inv.issue),
+                                supplierAmount: formatEmailAmount(supplierCurrency, supplierAmount),
+                                ourAmount: formatEmailAmount(xeroCurrency, xeroAmount),
+                                difference: diffText,
+                              };
+                            })
+                        : [];
                     const detailColumns = [
+                      ...(activeTab === "latest" || activeTab === "attention" ? [["select", ""]] : []),
                       ["invoiceNumber", "INVOICE #"],
                       ["date", "DATE"],
                       ["issue", "ISSUE"],
@@ -2203,10 +2713,12 @@ export default function SimpleApp() {
                             row.statusIssueCounts &&
                             ((row.statusIssueCounts.amountMismatch ?? 0) > 0 ||
                               (row.statusIssueCounts.missingFromXero ?? 0) > 0 ||
+                              (row.statusIssueCounts.overdue ?? 0) > 0 ||
+                              (row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0) > 0 ||
                               (row.statusIssueCounts.missingFromFile ?? 0) > 0) ? (
                               <span
                                 className={styles.statusIssueDots}
-                                aria-label={`Amount mismatch: ${row.statusIssueCounts.amountMismatch ?? 0}, Missing from Xero: ${row.statusIssueCounts.missingFromXero ?? 0}, Unverified: ${row.statusIssueCounts.missingFromFile ?? 0}`}
+                                aria-label={`Amount mismatch: ${row.statusIssueCounts.amountMismatch ?? 0}, Missing from Xero: ${row.statusIssueCounts.missingFromXero ?? 0}, Overdue: ${row.statusIssueCounts.overdue ?? 0}, Unverified: ${row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0}`}
                               >
                                 {(row.statusIssueCounts.amountMismatch ?? 0) > 0 && (
                                   <span
@@ -2232,15 +2744,27 @@ export default function SimpleApp() {
                                     </span>
                                   </span>
                                 )}
-                                {(row.statusIssueCounts.missingFromFile ?? 0) > 0 && (
+                                {(row.statusIssueCounts.overdue ?? 0) > 0 && (
                                   <span
                                     className={styles.statusIssueDotWrap}
-                                    data-tooltip={`Unverified (${row.statusIssueCounts.missingFromFile})`}
+                                    data-tooltip={`Overdue (${row.statusIssueCounts.overdue})`}
+                                    tabIndex={0}
+                                    aria-label="Overdue"
+                                  >
+                                    <span className={`${styles.statusIssueDot} ${styles.statusIssueDotOverdue}`} aria-hidden>
+                                      {row.statusIssueCounts.overdue}
+                                    </span>
+                                  </span>
+                                )}
+                                {(row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0) > 0 && (
+                                  <span
+                                    className={styles.statusIssueDotWrap}
+                                    data-tooltip={`Unverified (${row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile})`}
                                     tabIndex={0}
                                     aria-label="Unverified"
                                   >
                                     <span className={`${styles.statusIssueDot} ${styles.statusIssueDotMissingFile}`} aria-hidden>
-                                      {row.statusIssueCounts.missingFromFile}
+                                      {row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile}
                                     </span>
                                   </span>
                                 )}
@@ -2563,6 +3087,20 @@ export default function SimpleApp() {
                                     </button>
                                   )}
                                   <div className={styles.detailActions}>
+                                    {(activeTab === "latest" || activeTab === "attention") && (
+                                      <button
+                                        type="button"
+                                        className={styles.tab1BulkDeleteBtn}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleDeleteLatestFileOnlyInvoices(rowKey, row.supplier, tab1SelectedIdsForDelete);
+                                        }}
+                                        disabled={!tab1RowHasSelection || deletingLatestRowKey === String(rowKey)}
+                                        aria-label={`Delete ${tab1SelectedIdsForDelete.length} selected invoice${tab1SelectedIdsForDelete.length !== 1 ? "s" : ""}`}
+                                      >
+                                        {deletingLatestRowKey === String(rowKey) ? "Deleting…" : `Delete Selected${tab1RowHasSelection ? ` (${tab1SelectedIdsForDelete.length})` : ""}`}
+                                      </button>
+                                    )}
                                     {activeTab === "latest" && (
                                       <button
                                         type="button"
@@ -2582,7 +3120,14 @@ export default function SimpleApp() {
                                       className={styles.detailEmailBtn}
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setEmailModalRow(row);
+                                        if ((activeTab === "latest" || activeTab === "attention") && !tab1RowHasSelection) {
+                                          showFeedback("Please select at least one invoice before emailing the supplier.");
+                                          return;
+                                        }
+                                        setEmailModalRow({
+                                          ...row,
+                                          selectedInvoices: selectedInvoicesForEmail,
+                                        });
                                       }}
                                       aria-label="Email supplier"
                                     >
@@ -2615,15 +3160,26 @@ export default function SimpleApp() {
                                         {detailColumns.map(([key, label]) => (
                                           <th
                                             key={key}
-                                            className={key === "delete" ? styles.detailTh : `${styles.detailTh} ${styles.detailThSortable}`}
-                                            onClick={key === "delete" ? undefined : (e) => { e.stopPropagation(); handleDetailSort(key); }}
-                                            onKeyDown={key === "delete" ? undefined : (e) => { if (e.key === "Enter") { e.stopPropagation(); handleDetailSort(key); } }}
+                                            className={key === "delete" || key === "select" ? styles.detailTh : `${styles.detailTh} ${styles.detailThSortable}`}
+                                            onClick={key === "delete" || key === "select" ? undefined : (e) => { e.stopPropagation(); handleDetailSort(key); }}
+                                            onKeyDown={key === "delete" || key === "select" ? undefined : (e) => { if (e.key === "Enter") { e.stopPropagation(); handleDetailSort(key); } }}
                                             role="columnheader"
-                                            tabIndex={key === "delete" ? -1 : 0}
-                                            aria-sort={key === "delete" ? undefined : (detailTableSort.column === key ? (detailTableSort.dir === "asc" ? "ascending" : "descending") : undefined)}
+                                            tabIndex={key === "delete" || key === "select" ? -1 : 0}
+                                            aria-sort={key === "delete" || key === "select" ? undefined : (detailTableSort.column === key ? (detailTableSort.dir === "asc" ? "ascending" : "descending") : undefined)}
                                           >
-                                            {label}
-                                            {key !== "delete" && detailTableSort.column === key && (
+                                            {key === "select" && (activeTab === "latest" || activeTab === "attention") ? (
+                                              <label className={styles.reconciledCheckboxLabel} onClick={(e) => e.stopPropagation()}>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={tab1SelectAllChecked}
+                                                  disabled={tab1SelectableDetailIds.length === 0}
+                                                  onChange={() => toggleTab1SelectAllForRow(rowKey, tab1SelectableDetailIds)}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  aria-label="Select all visible invoices"
+                                                />
+                                              </label>
+                                            ) : label}
+                                            {key !== "delete" && key !== "select" && detailTableSort.column === key && (
                                               <span className={styles.detailSortIcon} aria-hidden>
                                                 {detailTableSort.dir === "asc" ? " ↑" : " ↓"}
                                               </span>
@@ -2635,8 +3191,24 @@ export default function SimpleApp() {
                                     <tbody>
                                       {sortedDetailRows.map((inv, j) => {
                                         const isPaid = inv.status === "Paid" || inv.issue === "paid";
+                                        const rowDeleteId = inv.deleteInvoiceId ?? inv._id;
+                                        const rowDeleteIdStr = rowDeleteId ? String(rowDeleteId) : null;
                                         return (
                                         <tr key={inv.invoiceNumber ? `${inv.invoiceNumber}-${j}` : j} className={isPaid ? styles.detailRowPaid : undefined}>
+                                          {(activeTab === "latest" || activeTab === "attention") && (
+                                            <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
+                                              <label className={styles.reconciledCheckboxLabel}>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={rowDeleteIdStr ? tab1SelectedSet.has(rowDeleteIdStr) : false}
+                                                  disabled={!rowDeleteIdStr}
+                                                  onChange={() => rowDeleteIdStr && toggleTab1InvoiceSelection(rowKey, rowDeleteIdStr)}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  aria-label={`Select invoice ${inv.invoiceNumber || j + 1}`}
+                                                />
+                                              </label>
+                                            </td>
+                                          )}
                                           <td className={styles.detailTd}>{inv.invoiceNumber}</td>
                                           <td className={styles.detailTd}>{inv.date || "–"}</td>
                                           <td className={styles.detailTd}>
@@ -2648,6 +3220,8 @@ export default function SimpleApp() {
                                               <span className={styles.issuePillMismatch}>{inv.issue}</span>
                                             ) : inv.issue === "MISSING FROM XERO" ? (
                                               <span className={styles.issuePillMissingFromXero}>{inv.issue}</span>
+                                            ) : inv.issue === "OVERDUE" ? (
+                                              <span className={styles.issuePillOverdue}>Overdue</span>
                                             ) : inv.issue === "MISSING FROM FILE" || inv.issue === "UNVERIFIED" ? (
                                               <span className={styles.issuePillMissingFromFile}>Unverified</span>
                                             ) : (
@@ -2691,19 +3265,19 @@ export default function SimpleApp() {
                                           </td>
                                           <td className={styles.detailTd}>{inv.status ?? "–"}</td>
                                           <td className={styles.detailTd} onClick={(e) => e.stopPropagation()}>
-                                            {(inv.deleteInvoiceId ?? inv._id) ? (
+                                            {rowDeleteIdStr ? (
                                               <button
                                                 type="button"
                                                 className={styles.detailDeleteBtn}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
-                                                  handleHardDeleteInvoice(inv.deleteInvoiceId ?? inv._id);
+                                                  handleHardDeleteInvoice(rowDeleteIdStr);
                                                 }}
-                                                disabled={deletingInvoiceId === (inv.deleteInvoiceId ?? inv._id)}
+                                                disabled={deletingInvoiceId === rowDeleteIdStr}
                                                 aria-label={`Delete invoice ${inv.invoiceNumber || "row"}`}
                                                 title="Delete invoice"
                                               >
-                                                {deletingInvoiceId === (inv.deleteInvoiceId ?? inv._id) ? (
+                                                {deletingInvoiceId === rowDeleteIdStr ? (
                                                   <span className={styles.detailDeleteSpinner} aria-hidden />
                                                 ) : (
                                                   <svg className={styles.detailDeleteIcon} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -2852,6 +3426,95 @@ export default function SimpleApp() {
         </div>
       )}
 
+      {predefinedNamesVisible && (
+        <div
+          className={styles.manualSupplierOverlay}
+          onClick={handlePredefinedNamesCancel}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="predefined-names-title"
+        >
+          <div
+            className={styles.manualSupplierBox}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="predefined-names-title" className={styles.manualSupplierTitle}>
+              Upload with predefined names
+            </h2>
+            <p className={styles.manualSupplierText}>
+              Review files below and set the name for each one before upload.
+            </p>
+            <div className={styles.predefinedNamesList}>
+              {predefinedNamesFiles.map((entry) => (
+                <div key={entry.id} className={styles.predefinedNamesRow}>
+                  <div className={styles.predefinedNamesFile}>
+                    <strong>{entry.file.name}</strong>
+                    <span>{entry.extension || "No extension"}</span>
+                  </div>
+                  <input
+                    type="text"
+                    className={styles.manualSupplierInput}
+                    value={entry.enteredName}
+                    onChange={(e) =>
+                      setPredefinedNamesFiles((prev) =>
+                        prev.map((item) =>
+                          item.id === entry.id
+                            ? { ...item, enteredName: e.target.value }
+                            : item
+                        )
+                      )
+                    }
+                    placeholder="Enter file name"
+                    disabled={uploadLoading}
+                  />
+                </div>
+              ))}
+            </div>
+            {predefinedNamesError && (
+              <p className={styles.uploadError} role="alert">
+                {predefinedNamesError}
+              </p>
+            )}
+            <div className={styles.manualSupplierActions}>
+              <button
+                type="button"
+                className={styles.manualSupplierPrimary}
+                onClick={handlePredefinedNamesContinue}
+                disabled={uploadLoading}
+              >
+                {uploadLoading ? "Uploading..." : "Continue upload"}
+              </button>
+              <button
+                type="button"
+                className={styles.manualSupplierSecondary}
+                onClick={handlePredefinedNamesCancel}
+                disabled={uploadLoading}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {feedbackToast && (
+        <div
+          className={`${styles.paidToast} ${feedbackToast.type === "success" ? styles.paidToastSuccess : styles.paidToastError}`}
+          role="status"
+          aria-live="polite"
+        >
+          <span className={styles.paidToastMessage}>{feedbackToast.message}</span>
+          <button
+            type="button"
+            className={styles.paidToastDismiss}
+            onClick={() => setFeedbackToast(null)}
+            aria-label="Dismiss message"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {tab3PaidToast.visible && (
         <div className={styles.paidToast} role="status" aria-live="polite">
           <span className={styles.paidToastMessage}>{tab3PaidToast.message}</span>
@@ -2881,13 +3544,13 @@ export default function SimpleApp() {
             <div className={styles.emailModalField}>
               <label className={styles.emailModalLabel}>To</label>
               <div className={styles.emailModalValue}>
-                {String(emailModalRow.supplier || "").toLowerCase().replace(/\s+/g, ".")}@supplier.example.com
+                {emailDraft.to || ""}
               </div>
             </div>
             <div className={styles.emailModalField}>
               <label className={styles.emailModalLabel}>Subject</label>
               <div className={styles.emailModalValue}>
-                Invoice query – {emailModalRow.supplier || "Supplier"}
+                {emailDraft.subject}
               </div>
             </div>
             <div className={styles.emailModalField}>
@@ -2895,19 +3558,63 @@ export default function SimpleApp() {
               <div className={styles.emailModalBody}>
                 Dear {emailModalRow.supplier || "Supplier"},
                 {"\n\n"}
-                Please find our query regarding the recent invoices. Could you confirm the details at your earliest convenience?
+                Please review the invoice discrepancies listed below and confirm the correct records:
                 {"\n\n"}
-                Kind regards
+                {Array.isArray(emailModalRow.selectedInvoices) && emailModalRow.selectedInvoices.length > 0 ? (
+                  <>
+                    <table className={styles.detailTable} style={{ marginBottom: "1rem" }}>
+                      <thead>
+                        <tr>
+                          <th className={styles.detailTh}>INVOICE #</th>
+                          <th className={styles.detailTh}>PROBLEM</th>
+                          <th className={styles.detailTh}>SUPPLIER RECORD</th>
+                          <th className={styles.detailTh}>OUR RECORD</th>
+                          <th className={styles.detailTh}>DIFFERENCE</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {emailModalRow.selectedInvoices.map((item, idx) => (
+                          <tr key={`${item.invoiceNumber}-${idx}`}>
+                            <td className={styles.detailTd}>{item.invoiceNumber}</td>
+                            <td className={styles.detailTd}>{item.problem}</td>
+                            <td className={styles.detailTd}>{item.supplierAmount}</td>
+                            <td className={styles.detailTd}>{item.ourAmount}</td>
+                            <td className={styles.detailTd}>{item.difference}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {"\n"}
+                  </>
+                ) : null}
+                Please share any corrected invoice references or supporting details so we can reconcile quickly.
+                {"\n\n"}
+                Kind regards,
+                {"\n"}
+                Steve Accounting Team
               </div>
             </div>
-            <button
-              type="button"
-              className={styles.emailModalClose}
-              onClick={() => setEmailModalRow(null)}
-              aria-label="Close"
-            >
-              Close
-            </button>
+            <div className={styles.emailModalActions}>
+              <button
+                type="button"
+                className={styles.emailModalPrimary}
+                onClick={() => {
+                  const mailto = `mailto:${encodeURIComponent(emailDraft.to)}?subject=${encodeURIComponent(emailDraft.subject)}&body=${encodeURIComponent(emailDraft.body)}`;
+                  window.open(mailto, "_blank", "noopener,noreferrer");
+                }}
+                aria-label="Open default mail app"
+              >
+                Open in Mail App
+              </button>
+              <button
+                type="button"
+                className={styles.emailModalClose}
+                onClick={() => setEmailModalRow(null)}
+                aria-label="Close"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

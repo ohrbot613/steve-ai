@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && npm run postbuild",
-    "postbuild": "cp dist/index.html ../views/ && cp -r dist/assets/* ../public/assets/ && cp dist/vite.svg ../public/ 2>/dev/null || true",
+    "postbuild": "mkdir -p ../public/assets && rsync -a --delete dist/assets/ ../public/assets/ && cp dist/index.html ../views/ && cp dist/vite.svg ../public/ 2>/dev/null || true",
     "lint": "eslint .",
     "preview": "vite preview"
   },
