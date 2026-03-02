@@ -138,6 +138,7 @@ router.post(
     const attachmentList = normalizeAttachments(attachments);
     const hasScreenshot = Boolean(screenshotData);
     const userId = req.user?._id ? String(req.user._id) : null;
+    const tenantId = req.user?.tenant ? String(req.user.tenant) : null;
 
     if (!trimmedMessage) {
       return res.status(400).json({
@@ -150,6 +151,7 @@ router.post(
     await saveAttachmentsToDisk(attachmentList);
 
     await UserErrorReport.create({
+      tenantId,
       userId,
       userEmail: req.user?.email || null,
       userName: req.user?.name || null,
@@ -223,13 +225,14 @@ router.post(
 
 /**
  * GET /api/v1/report-error/db/list
- * Returns current authenticated user's submitted reports from DB.
+ * Returns authenticated user's team reports from DB.
  */
 router.get(
   "/report-error/db/list",
   protect,
   tryCatchAsync(async (req, res) => {
     const userId = req.user?._id ? String(req.user._id) : null;
+    const tenantId = req.user?.tenant ? String(req.user.tenant) : null;
     if (!userId) {
       return res.status(401).json({
         status: "error",
@@ -240,14 +243,17 @@ router.get(
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
     const skip = (page - 1) * limit;
+    const query = tenantId
+      ? { $or: [{ tenantId }, { tenantId: null, userId }] }
+      : { userId };
 
     const [items, total] = await Promise.all([
-      UserErrorReport.find({ userId })
+      UserErrorReport.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
-      UserErrorReport.countDocuments({ userId }),
+      UserErrorReport.countDocuments(query),
     ]);
 
     return res.status(200).json({
@@ -257,6 +263,7 @@ router.get(
       total,
       items: items.map((item) => ({
         id: String(item._id),
+        tenantId: item.tenantId || null,
         userId: item.userId || null,
         userEmail: item.userEmail || null,
         userName: item.userName || null,
@@ -266,6 +273,7 @@ router.get(
         hasScreenshot: Boolean(item.hasScreenshot),
         attachmentsCount: Number(item.attachmentsCount || 0),
         status: normalizeStatus(item.status),
+        isOwnReport: item.userId === userId,
         createdAt: item.createdAt || null,
         updatedAt: item.updatedAt || null,
       })),

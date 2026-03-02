@@ -310,7 +310,7 @@ export default function Home() {
                                 <button 
                                     type="button" 
                                     className={pageStyle.browseButton}
-                                    onClick={() => document.querySelector(`.${pageStyle.fileInput}`).click()}
+                                    onClick={() => document.querySelector(`.${pageStyle.fileInput}`)?.click()}
                                 >
                                     Browse
                                 </button>

@@ -40,6 +40,7 @@ export default function UserErrors() {
 
   const hasPrev = page > 1;
   const hasNext = reports.length === PAGE_SIZE;
+  const canManageReport = (report) => report?.isOwnReport !== false;
 
   const loadReports = useCallback(async () => {
     setLoading(true);
@@ -54,11 +55,11 @@ export default function UserErrors() {
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.status !== "success") {
-        throw new Error(data.message || "Failed to load your error reports.");
+        throw new Error(data.message || "Failed to load team error reports.");
       }
       setReports(Array.isArray(data.items) ? data.items : []);
     } catch (err) {
-      setError(err.message || "Failed to load your error reports.");
+      setError(err.message || "Failed to load team error reports.");
       setReports([]);
     } finally {
       setLoading(false);
@@ -70,6 +71,7 @@ export default function UserErrors() {
   }, [loadReports]);
 
   function startEdit(report) {
+    if (!canManageReport(report)) return;
     setEditing({
       id: report.id,
       message: report.message || "",
@@ -123,6 +125,7 @@ export default function UserErrors() {
   }
 
   async function handleDelete(report) {
+    if (!canManageReport(report)) return;
     if (!report?.id || deletingId) return;
     const confirmDelete = window.confirm("Delete this report?");
     if (!confirmDelete) return;
@@ -149,6 +152,7 @@ export default function UserErrors() {
   }
 
   async function handleApprove(report) {
+    if (!canManageReport(report)) return;
     if (!report?.id || savingId || deletingId) return;
     setSavingId(report.id);
     setError("");
@@ -189,7 +193,7 @@ export default function UserErrors() {
   const emptyState = useMemo(
     () => (
       <div className={styles.emptyState}>
-        <p>No reported errors found on this page.</p>
+        <p>No team error reports found on this page.</p>
       </div>
     ),
     []
@@ -204,8 +208,8 @@ export default function UserErrors() {
         Back to home
       </Link>
       <div className={pageStyle.top}>
-        <h1 className={styles.pageTitle}>My Errors</h1>
-        <p>View all error reports saved in your database, including their status and attachments.</p>
+        <h1 className={styles.pageTitle}>Team Errors</h1>
+        <p>View all error reports submitted by your team, including status and attachments.</p>
       </div>
 
       {error && <div className={pageStyle.errorMessage}>{error}</div>}
@@ -213,7 +217,7 @@ export default function UserErrors() {
 
       {loading ? (
         <div className={pageStyle.loading}>
-          <p>Loading your errors...</p>
+          <p>Loading team errors...</p>
         </div>
       ) : reports.length === 0 ? (
         emptyState
@@ -235,7 +239,7 @@ export default function UserErrors() {
               <div className={styles.meta}>
                 <span>Created: {formatDate(report.createdAt)}</span>
                 <span>Updated: {formatDate(report.updatedAt || report.createdAt)}</span>
-                <span>User: {report.userEmail || report.userName || "Unknown"}</span>
+                <span>User: {report.userName || "Unknown"}</span>
                 <span>Screenshot: {report.hasScreenshot ? "Yes" : "No"}</span>
                 <span>Attachments: {report.attachmentsCount || 0}</span>
               </div>
@@ -299,7 +303,7 @@ export default function UserErrors() {
                   type="button"
                   className={styles.secondaryBtn}
                   onClick={() => startEdit(report)}
-                  disabled={deletingId === report.id || savingId === report.id}
+                  disabled={!canManageReport(report) || deletingId === report.id || savingId === report.id}
                 >
                   Edit
                 </button>
@@ -307,11 +311,11 @@ export default function UserErrors() {
                   type="button"
                   className={styles.dangerBtn}
                   onClick={() => handleDelete(report)}
-                  disabled={deletingId === report.id || savingId === report.id}
+                  disabled={!canManageReport(report) || deletingId === report.id || savingId === report.id}
                 >
                   {deletingId === report.id ? "Deleting..." : "Delete"}
                 </button>
-                {report.status === "fixed" && (
+                {report.status === "fixed" && canManageReport(report) && (
                   <button
                     type="button"
                     className={`${styles.primaryBtn} ${styles.approveBtn}`}

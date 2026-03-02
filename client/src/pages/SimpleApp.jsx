@@ -2402,7 +2402,16 @@ export default function SimpleApp() {
                     const showSupplierCurrencyTotals = activeTab === "latest" || activeTab === "attention";
                     const diffFormatted = diff >= 0
                       ? (showSupplierCurrencyTotals ? formatCurrencyTableAmount(rowSupplierCurrency, diff) : formatTableAmount(diff))
-                      : (showSupplierCurrencyTotals ? `-${formatCurrencyTableAmount(rowSupplierCurrency, -diff)}` : `-${formatTableAmount(-diff)}`);
+                      : (
+                        showSupplierCurrencyTotals
+                          ? (
+                            // Tab 2/3 supplier-currency values should be "GBP -123.45" (minus before number).
+                            activeTab === "attention"
+                              ? formatCurrencyTableAmount(rowSupplierCurrency, diff)
+                              : `-${formatCurrencyTableAmount(rowSupplierCurrency, -diff)}`
+                          )
+                          : `-${formatTableAmount(-diff)}`
+                      );
                     const statusClass =
                       activeTab === "attention"
                         ? styles.statusActionNeeded

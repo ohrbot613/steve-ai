@@ -18,6 +18,11 @@ const attachmentSchema = new mongoose.Schema(
 
 const userErrorReportSchema = new mongoose.Schema(
   {
+    tenantId: {
+      type: String,
+      default: null,
+      index: true,
+    },
     userId: {
       type: String,
       default: null,
