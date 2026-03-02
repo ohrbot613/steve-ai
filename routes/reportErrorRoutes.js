@@ -69,6 +69,13 @@ function isValidMongoId(value) {
   return /^[a-fA-F0-9]{24}$/.test(String(value || ""));
 }
 
+function buildReportAccessQuery(userId, tenantId) {
+  if (tenantId) {
+    return { $or: [{ tenantId }, { tenantId: null, userId }] };
+  }
+  return { userId };
+}
+
 const REPORT_FILES_DIR = path.resolve(
   __dirname,
   "../../steve_files_do_not_delete/errors"
@@ -243,9 +250,7 @@ router.get(
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
     const skip = (page - 1) * limit;
-    const query = tenantId
-      ? { $or: [{ tenantId }, { tenantId: null, userId }] }
-      : { userId };
+    const query = buildReportAccessQuery(userId, tenantId);
 
     const [items, total] = await Promise.all([
       UserErrorReport.find(query)
@@ -290,6 +295,7 @@ router.patch(
   protect,
   tryCatchAsync(async (req, res) => {
     const userId = req.user?._id ? String(req.user._id) : null;
+    const tenantId = req.user?.tenant ? String(req.user.tenant) : null;
     if (!userId) {
       return res.status(401).json({
         status: "error",
@@ -304,7 +310,8 @@ router.patch(
         message: "Invalid report id.",
       });
     }
-    const existing = await UserErrorReport.findOne({ _id: reportId, userId });
+    const accessQuery = buildReportAccessQuery(userId, tenantId);
+    const existing = await UserErrorReport.findOne({ _id: reportId, ...accessQuery });
     if (!existing) {
       return res.status(404).json({
         status: "fail",
@@ -336,7 +343,7 @@ router.patch(
 
     updates.updatedAt = new Date();
     const updated = await UserErrorReport.findOneAndUpdate(
-      { _id: reportId, userId },
+      { _id: reportId, ...accessQuery },
       updates,
       { new: true }
     ).lean();
@@ -363,6 +370,7 @@ router.delete(
   protect,
   tryCatchAsync(async (req, res) => {
     const userId = req.user?._id ? String(req.user._id) : null;
+    const tenantId = req.user?.tenant ? String(req.user.tenant) : null;
     if (!userId) {
       return res.status(401).json({
         status: "error",
@@ -376,7 +384,11 @@ router.delete(
         message: "Invalid report id.",
       });
     }
-    const deleted = await UserErrorReport.findOneAndDelete({ _id: reportId, userId }).lean();
+    const accessQuery = buildReportAccessQuery(userId, tenantId);
+    const deleted = await UserErrorReport.findOneAndDelete({
+      _id: reportId,
+      ...accessQuery,
+    }).lean();
     if (!deleted) {
       return res.status(404).json({
         status: "fail",

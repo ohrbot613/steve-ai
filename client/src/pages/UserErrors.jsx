@@ -40,7 +40,7 @@ export default function UserErrors() {
 
   const hasPrev = page > 1;
   const hasNext = reports.length === PAGE_SIZE;
-  const canManageReport = (report) => report?.isOwnReport !== false;
+  const canManageReport = (report) => Boolean(report?.id);
 
   const loadReports = useCallback(async () => {
     setLoading(true);
