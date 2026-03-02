@@ -8,12 +8,72 @@
   color: #0284c7;
 }
 
+.controls {
+  margin-bottom: 1.4rem;
+}
+
+.sortHint {
+  margin: 0 0 0.8rem;
+  color: #6b7280;
+  font-size: 1.3rem;
+}
+
+.filterChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.filterChip {
+  border: 0.1rem solid #d1d5db;
+  background: #fff;
+  color: #374151;
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
+  font-size: 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.2s ease, box-shadow 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.filterChip:hover {
+  transform: translateY(-1px);
+  border-color: #93c5fd;
+  box-shadow: 0 6px 12px rgba(37, 99, 235, 0.1);
+}
+
+.filterChipActive {
+  background: #dbeafe;
+  border-color: #60a5fa;
+  color: #1e3a8a;
+}
+
 .card {
   background: #fff;
   border: 0.1rem solid #e5e7eb;
   border-radius: 1rem;
   padding: 1.6rem;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.animatedCard {
+  opacity: 0;
+  transform: translateY(8px);
+  animation: cardEnter 0.35s ease forwards;
+  animation-delay: calc(var(--stagger-index, 0) * 45ms);
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: #dbeafe;
+  box-shadow: 0 12px 24px rgba(2, 132, 199, 0.12);
+}
+
+.skeletonCard {
+  cursor: default;
+  pointer-events: none;
 }
 
 .cardHeader {
@@ -30,6 +90,17 @@
   font-weight: 600;
 }
 
+.skeletonTitle {
+  width: min(34rem, 75%);
+  height: 2rem;
+}
+
+.skeletonBadge {
+  width: 11rem;
+  height: 2.4rem;
+  border-radius: 999px;
+}
+
 .meta {
   display: flex;
   flex-wrap: wrap;
@@ -37,6 +108,11 @@
   margin-top: 1rem;
   color: #6b7280;
   font-size: 1.3rem;
+}
+
+.skeletonMeta {
+  width: 12rem;
+  height: 1.4rem;
 }
 
 .statusBadge {
@@ -47,6 +123,7 @@
   font-size: 1.2rem;
   font-weight: 600;
   white-space: nowrap;
+  transition: transform 0.2s ease;
 }
 
 .status_open {
@@ -86,6 +163,12 @@
   margin-top: 1.4rem;
 }
 
+.skeletonButton {
+  width: 9rem;
+  height: 3.2rem;
+  border-radius: 0.7rem;
+}
+
 .approveBtn {
   margin-left: auto;
 }
@@ -99,6 +182,15 @@
   font-weight: 600;
   border: 0.1rem solid transparent;
   padding: 0.8rem 1.2rem;
+  transition: transform 0.16s ease, box-shadow 0.2s ease, opacity 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.primaryBtn:hover:not(:disabled),
+.secondaryBtn:hover:not(:disabled),
+.dangerBtn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
 }
 
 .primaryBtn {
@@ -192,15 +284,48 @@
   font-size: 1.5rem;
 }
 
+@keyframes cardEnter {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   .pageTitle {
     color: #93c5fd;
+  }
+
+  .sortHint {
+    color: #9ca3af;
+  }
+
+  .filterChip {
+    background: #111827;
+    color: #e5e7eb;
+    border-color: #374151;
+  }
+
+  .filterChip:hover {
+    border-color: #1d4ed8;
+    box-shadow: 0 8px 16px rgba(30, 64, 175, 0.2);
+  }
+
+  .filterChipActive {
+    background: #1e3a8a;
+    color: #dbeafe;
+    border-color: #3b82f6;
   }
 
   .card {
     background: #111827;
     border-color: #1f2937;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  .card:hover {
+    border-color: #1d4ed8;
+    box-shadow: 0 14px 26px rgba(30, 64, 175, 0.26);
   }
 
   .title {

@@ -42,8 +42,13 @@ function formatCurrencyTableAmount(currency, amount) {
 }
 
 function getTab2UnpairedIssue(inv) {
-  if (inv?.issueType) return String(inv.issueType).toUpperCase();
-  if (inv?.fromXero === true) return "UNVERIFIED";
+  if (inv?.issueType) {
+    const normalizedIssue = String(inv.issueType).toUpperCase();
+    if (normalizedIssue === "OVERDUE") return "ISSUE";
+    if (normalizedIssue === "UNVERIFIED") return "POST";
+    return normalizedIssue;
+  }
+  if (inv?.fromXero === true) return "POST";
   return "MISSING FROM XERO";
 }
 
@@ -52,6 +57,8 @@ function formatIssueForEmail(issue) {
   if (!normalized) return "Needs review";
   if (normalized === "AMOUNT MISMATCH") return "Amount mismatch";
   if (normalized === "MISSING FROM XERO") return "Missing from our record";
+  if (normalized === "ISSUE") return "Issue";
+  if (normalized === "POST") return "Post";
   if (normalized === "MISSING FROM FILE" || normalized === "UNVERIFIED") return "We never received an invoice from them";
   if (normalized === "OVERDUE") return "Overdue";
   if (normalized === "MATCHED") return "Reconciled";
@@ -390,21 +397,37 @@ function getTableDataForTab(tab, dashboardData, tab2Data, tab3Data) {
         const issues = pairsAmountMismatch.length + unpairedInvoices.length;
         const hasAmountMismatch = pairsAmountMismatch.length > 0;
         const hasMissingFromXero = unpairedInvoices.some((u) => u.fromXero === false);
-        const hasOverdue = unpairedInvoices.some((u) => getTab2UnpairedIssue(u) === "OVERDUE");
-        const hasUnverified = unpairedInvoices.some((u) => getTab2UnpairedIssue(u) === "UNVERIFIED");
+        const hasIssue = unpairedInvoices.some((u) => {
+          const issue = getTab2UnpairedIssue(u);
+          return issue === "ISSUE" || issue === "OVERDUE";
+        });
+        const hasPost = unpairedInvoices.some((u) => {
+          const issue = getTab2UnpairedIssue(u);
+          return issue === "POST" || issue === "UNVERIFIED";
+        });
         const statusParts = [
           hasAmountMismatch ? "AMOUNT MISMATCH" : null,
           hasMissingFromXero ? "MISSING FROM XERO" : null,
-          hasOverdue ? "OVERDUE" : null,
-          hasUnverified ? "UNVERIFIED" : null,
+          hasIssue ? "ISSUE" : null,
+          hasPost ? "POST" : null,
         ].filter(Boolean);
+        const issueCount = unpairedInvoices.filter((u) => {
+          const issue = getTab2UnpairedIssue(u);
+          return issue === "ISSUE" || issue === "OVERDUE";
+        }).length;
+        const postCount = unpairedInvoices.filter((u) => {
+          const issue = getTab2UnpairedIssue(u);
+          return issue === "POST" || issue === "UNVERIFIED";
+        }).length;
         const statusIssueCounts = {
           amountMismatch: pairsAmountMismatch.length,
           missingFromXero: unpairedInvoices.filter((u) => u.fromXero === false).length,
-          overdue: unpairedInvoices.filter((u) => getTab2UnpairedIssue(u) === "OVERDUE").length,
-          unverified: unpairedInvoices.filter((u) => getTab2UnpairedIssue(u) === "UNVERIFIED").length,
+          issue: issueCount,
+          post: postCount,
+          overdue: issueCount,
+          unverified: postCount,
           // Keep legacy key for latest-tab dot rendering.
-          missingFromFile: unpairedInvoices.filter((u) => getTab2UnpairedIssue(u) === "UNVERIFIED").length,
+          missingFromFile: postCount,
         };
         return {
           supplier: s.supplier,
@@ -676,6 +699,7 @@ export default function SimpleApp() {
       return "attention";
     }
   });
+  const [tabsSearchText, setTabsSearchText] = useState("");
   const [exportTab2Loading, setExportTab2Loading] = useState(false);
   const [exportTab3Loading, setExportTab3Loading] = useState(false);
   const [exportingSupplierKey, setExportingSupplierKey] = useState(null);
@@ -762,20 +786,52 @@ export default function SimpleApp() {
     tabSort.column,
     tabSort.dir
   );
+  const canTypeInTabsSearch =
+    activeTab === "latest" ||
+    activeTab === "attention" ||
+    activeTab === "reconciled" ||
+    activeTab === "statements";
+  const normalizedSearchText = tabsSearchText.trim().toLowerCase();
+  const filteredTableData = useMemo(() => {
+    if (
+      !normalizedSearchText ||
+      (activeTab !== "latest" && activeTab !== "attention" && activeTab !== "reconciled")
+    ) {
+      return sortedTableData;
+    }
+    return sortedTableData.filter((row) => {
+      const haystack = [
+        row?.supplier,
+        row?.contactId,
+        row?.status,
+      ]
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase())
+        .join(" ");
+      return haystack.includes(normalizedSearchText);
+    });
+  }, [activeTab, normalizedSearchText, sortedTableData]);
+  const filteredStatementsBySupplier = useMemo(() => {
+    if (!normalizedSearchText || activeTab !== "statements") return statementsBySupplier;
+    return statementsBySupplier.filter(({ supplierName, contactId }) => {
+      const haystack = `${supplierName || ""} ${contactId || ""}`.toLowerCase();
+      return haystack.includes(normalizedSearchText);
+    });
+  }, [activeTab, normalizedSearchText, statementsBySupplier]);
 
   const [tab2Page, setTab2Page] = useState(1);
-  const tab2Total = activeTab === "attention" ? sortedTableData.length : 0;
+  const tab2Total = activeTab === "attention" ? filteredTableData.length : 0;
   const tab2TotalPages = Math.max(1, Math.ceil(tab2Total / TAB2_PAGE_SIZE));
   const paginatedTableData =
     activeTab === "attention" && tab2Total > TAB2_PAGE_SIZE
-      ? sortedTableData.slice(
+      ? filteredTableData.slice(
           (tab2Page - 1) * TAB2_PAGE_SIZE,
           tab2Page * TAB2_PAGE_SIZE
         )
-      : sortedTableData;
+      : filteredTableData;
   useEffect(() => {
     if (activeTab === "attention") setTab2Page(1);
-  }, [activeTab]);
+  }, [activeTab, tabsSearchText]);
 
   useEffect(() => {
     try {
@@ -2073,6 +2129,21 @@ export default function SimpleApp() {
           </div>
         </section>
 
+        <div className={styles.tabsSearchWrap}>
+          <input
+            type="text"
+            className={styles.tabsSearchInput}
+            placeholder="Search..."
+            value={tabsSearchText}
+            onChange={(e) => {
+              if (!canTypeInTabsSearch) return;
+              setTabsSearchText(e.target.value);
+            }}
+            disabled={!canTypeInTabsSearch}
+            aria-label="Search"
+          />
+        </div>
+
         <div className={styles.tabsContainer}>
           <nav
             className={styles.tabs}
@@ -2189,10 +2260,14 @@ export default function SimpleApp() {
               {!statementsLoading && statementsError && (
                 <p className={styles.statementsListMessage}>{statementsError}</p>
               )}
-              {!statementsLoading && !statementsError && statementsBySupplier.length === 0 && (
-                <p className={styles.statementsListMessage}>No statements with more than 1 invoice.</p>
+              {!statementsLoading && !statementsError && filteredStatementsBySupplier.length === 0 && (
+                <p className={styles.statementsListMessage}>
+                  {normalizedSearchText
+                    ? "No matching suppliers found."
+                    : "No statements with more than 1 invoice."}
+                </p>
               )}
-              {!statementsLoading && !statementsError && statementsBySupplier.length > 0 && (
+              {!statementsLoading && !statementsError && filteredStatementsBySupplier.length > 0 && (
                 <div className={styles.tableWrap}>
                   <table className={styles.supplierTable}>
                     <thead>
@@ -2204,7 +2279,7 @@ export default function SimpleApp() {
                       </tr>
                     </thead>
                     <tbody>
-                      {statementsBySupplier.map(({ supplierName, contactId, statements, supplierCurrency, totalAmountOriginal }) => {
+                      {filteredStatementsBySupplier.map(({ supplierName, contactId, statements, supplierCurrency, totalAmountOriginal }) => {
                         const totalInvoices = statements.reduce((sum, log) => sum + (log.total ?? 0), 0);
                         const expandKey = contactId || supplierName;
                         const isExpanded = expandedStatementSuppliers.has(expandKey);
@@ -2722,12 +2797,12 @@ export default function SimpleApp() {
                             row.statusIssueCounts &&
                             ((row.statusIssueCounts.amountMismatch ?? 0) > 0 ||
                               (row.statusIssueCounts.missingFromXero ?? 0) > 0 ||
-                              (row.statusIssueCounts.overdue ?? 0) > 0 ||
-                              (row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0) > 0 ||
+                              (row.statusIssueCounts.issue ?? row.statusIssueCounts.overdue ?? 0) > 0 ||
+                              (row.statusIssueCounts.post ?? row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0) > 0 ||
                               (row.statusIssueCounts.missingFromFile ?? 0) > 0) ? (
                               <span
                                 className={styles.statusIssueDots}
-                                aria-label={`Amount mismatch: ${row.statusIssueCounts.amountMismatch ?? 0}, Missing from Xero: ${row.statusIssueCounts.missingFromXero ?? 0}, Overdue: ${row.statusIssueCounts.overdue ?? 0}, Unverified: ${row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0}`}
+                                aria-label={`Amount mismatch: ${row.statusIssueCounts.amountMismatch ?? 0}, Missing from Xero: ${row.statusIssueCounts.missingFromXero ?? 0}, Issue: ${row.statusIssueCounts.issue ?? row.statusIssueCounts.overdue ?? 0}, Post: ${row.statusIssueCounts.post ?? row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0}`}
                               >
                                 {(row.statusIssueCounts.amountMismatch ?? 0) > 0 && (
                                   <span
@@ -2753,27 +2828,27 @@ export default function SimpleApp() {
                                     </span>
                                   </span>
                                 )}
-                                {(row.statusIssueCounts.overdue ?? 0) > 0 && (
+                                {(row.statusIssueCounts.issue ?? row.statusIssueCounts.overdue ?? 0) > 0 && (
                                   <span
                                     className={styles.statusIssueDotWrap}
-                                    data-tooltip={`Overdue (${row.statusIssueCounts.overdue})`}
+                                    data-tooltip={`Issue (${row.statusIssueCounts.issue ?? row.statusIssueCounts.overdue ?? 0})`}
                                     tabIndex={0}
-                                    aria-label="Overdue"
+                                    aria-label="Issue"
                                   >
                                     <span className={`${styles.statusIssueDot} ${styles.statusIssueDotOverdue}`} aria-hidden>
-                                      {row.statusIssueCounts.overdue}
+                                      {row.statusIssueCounts.issue ?? row.statusIssueCounts.overdue ?? 0}
                                     </span>
                                   </span>
                                 )}
-                                {(row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0) > 0 && (
+                                {(row.statusIssueCounts.post ?? row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0) > 0 && (
                                   <span
                                     className={styles.statusIssueDotWrap}
-                                    data-tooltip={`Unverified (${row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile})`}
+                                    data-tooltip={`Post (${row.statusIssueCounts.post ?? row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0})`}
                                     tabIndex={0}
-                                    aria-label="Unverified"
+                                    aria-label="Post"
                                   >
                                     <span className={`${styles.statusIssueDot} ${styles.statusIssueDotMissingFile}`} aria-hidden>
-                                      {row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile}
+                                      {row.statusIssueCounts.post ?? row.statusIssueCounts.unverified ?? row.statusIssueCounts.missingFromFile ?? 0}
                                     </span>
                                   </span>
                                 )}
@@ -3229,8 +3304,10 @@ export default function SimpleApp() {
                                               <span className={styles.issuePillMismatch}>{inv.issue}</span>
                                             ) : inv.issue === "MISSING FROM XERO" ? (
                                               <span className={styles.issuePillMissingFromXero}>{inv.issue}</span>
-                                            ) : inv.issue === "OVERDUE" ? (
-                                              <span className={styles.issuePillOverdue}>Overdue</span>
+                                            ) : inv.issue === "ISSUE" || inv.issue === "OVERDUE" ? (
+                                              <span className={styles.issuePillOverdue}>Issue</span>
+                                            ) : inv.issue === "POST" ? (
+                                              <span className={styles.issuePillMissingFromFile}>POST</span>
                                             ) : inv.issue === "MISSING FROM FILE" || inv.issue === "UNVERIFIED" ? (
                                               <span className={styles.issuePillMissingFromFile}>Unverified</span>
                                             ) : (

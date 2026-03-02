@@ -9,6 +9,7 @@ const XeroSyncState = require("../../modals/xeroSyncStateModal");
 const { logProcess } = require("../controllers/processLogController");
 
 const PAGE_SIZE = 100;
+const XERO_ACCPAY_WHERE = 'Type=="ACCPAY"';
 
 /** Max vendors to load when doing similarity search (then score and take top N). */
 const SIMILARITY_SEARCH_CANDIDATE_LIMIT = 3000;
@@ -434,7 +435,7 @@ exports.getAllInvoices = tryCatchAsync(async (req, res) => {
                 const result = await xeroClient.accountingApi.getInvoices(
                     tenantId,
                     undefined, // ifModifiedSince
-                    undefined, // where
+                    XERO_ACCPAY_WHERE, // where
                     undefined, // order
                     undefined, // iDs
                     undefined, // invoiceNumbers
@@ -565,7 +566,7 @@ console.log('isWithinLast30Min', isWithinLast30Min)
                 result = await xeroClient.accountingApi.getInvoices(
                     tenantId,
                     ifModifiedSince,
-                    undefined,
+                    XERO_ACCPAY_WHERE,
                     undefined,
                     undefined,
                     undefined,

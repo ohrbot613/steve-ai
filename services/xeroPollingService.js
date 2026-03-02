@@ -102,7 +102,7 @@ async function fetchNewXeroInvoices(accessToken, tenantId, lastPolledAt) {
 
     while (true) {
         const response = await axios.get(
-            `https://api.xero.com/api.xro/2.0/Invoices?page=${page}&pageSize=100`,
+            `https://api.xero.com/api.xro/2.0/Invoices?where=${encodeURIComponent('Type=="ACCPAY"')}&page=${page}&pageSize=100`,
             { headers }
         );
 

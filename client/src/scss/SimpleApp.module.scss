@@ -262,6 +262,38 @@ $simple-border: #1A1D28;
   font-size: 14px;
 }
 
+.tabsSearchWrap {
+  margin-top: 24px;
+}
+
+.tabsSearchInput {
+  width: 100%;
+  max-width: 360px;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid $simple-border;
+  background: #0F172A;
+  color: #F8FAFC;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+
+  &::placeholder {
+    color: #94A3B8;
+  }
+
+  &:focus {
+    border-color: #7B8CDE;
+    box-shadow: 0 0 0 2px rgba(123, 140, 222, 0.2);
+  }
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+}
+
 .tabsContainer {
   display: flex;
   flex-direction: row;

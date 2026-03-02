@@ -693,16 +693,19 @@ exports.getDashboardTab2 = tryCatchAsync(async (req, res) => {
                         const amountRounded = Math.round(amount * 100) / 100;
                         const currency = normalizeCurrency(inv.currency) || "GBP";
                         const invoiceDueDate = toStartOfDay(inv.dueDate);
-                        const isOverdueByStatement = Boolean(
+                        const isBeforeLatestStatementDate = Boolean(
                             inv.fromXero === true &&
                             latestStatementDate &&
                             invoiceDueDate &&
-                            invoiceDueDate.getTime() <= latestStatementDate.getTime()
+                            invoiceDueDate.getTime() < latestStatementDate.getTime()
                         );
                         const issueType =
                             inv.fromXero === true
-                                ? (isOverdueByStatement ? "OVERDUE" : "UNVERIFIED")
+                                ? (isBeforeLatestStatementDate ? "ISSUE" : "POST")
                                 : "MISSING FROM XERO";
+                        // "POST" items are non-actionable (same treatment as paid):
+                        // keep them out of Tab 2 supplier summaries, counts, and top dashboard boxes.
+                        if (issueType === "POST") continue;
                         if (inv.fromXero === false) {
                             theySay += amountRounded;
                             addCurrencyAmount(theySayByCurrency, currency, amountRounded);

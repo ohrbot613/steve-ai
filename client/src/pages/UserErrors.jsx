@@ -21,6 +21,15 @@ const STATUS_LABELS = {
   closed: "Closed",
 };
 
+const STATUS_SORT_ORDER = {
+  open: 0,
+  reviewed_by_dev: 1,
+  in_dev: 2,
+  fixed: 3,
+  approved_by_client: 4,
+  closed: 5,
+};
+
 function formatDate(dateString) {
   if (!dateString) return "Unknown";
   const date = new Date(dateString);
@@ -37,6 +46,7 @@ export default function UserErrors() {
   const [savingId, setSavingId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [activeStatusFilter, setActiveStatusFilter] = useState("all");
 
   const hasPrev = page > 1;
   const hasNext = reports.length === PAGE_SIZE;
@@ -199,6 +209,35 @@ export default function UserErrors() {
     []
   );
 
+  const sortedReports = useMemo(() => {
+    return [...reports].sort((a, b) => {
+      const aRank = STATUS_SORT_ORDER[a?.status] ?? Number.MAX_SAFE_INTEGER;
+      const bRank = STATUS_SORT_ORDER[b?.status] ?? Number.MAX_SAFE_INTEGER;
+      if (aRank !== bRank) return aRank - bRank;
+
+      const aUpdated = new Date(a?.updatedAt || a?.createdAt || 0).getTime();
+      const bUpdated = new Date(b?.updatedAt || b?.createdAt || 0).getTime();
+      return bUpdated - aUpdated;
+    });
+  }, [reports]);
+
+  const statusCounts = useMemo(() => {
+    return sortedReports.reduce(
+      (acc, item) => {
+        const status = item?.status || "open";
+        acc.total += 1;
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      },
+      { total: 0 }
+    );
+  }, [sortedReports]);
+
+  const visibleReports = useMemo(() => {
+    if (activeStatusFilter === "all") return sortedReports;
+    return sortedReports.filter((report) => report?.status === activeStatusFilter);
+  }, [activeStatusFilter, sortedReports]);
+
   return (
     <main className={pageStyle.main}>
       <Link to="/" className={pageStyle.back}>
@@ -215,16 +254,75 @@ export default function UserErrors() {
       {error && <div className={pageStyle.errorMessage}>{error}</div>}
       {successMessage && <div className={pageStyle.successMessage}>{successMessage}</div>}
 
+      {!loading && reports.length > 0 ? (
+        <section className={styles.controls}>
+          <p className={styles.sortHint}>
+            Sorted by status (open items first), then most recently updated.
+          </p>
+          <div className={styles.filterChips}>
+            <button
+              type="button"
+              className={`${styles.filterChip} ${
+                activeStatusFilter === "all" ? styles.filterChipActive : ""
+              }`}
+              onClick={() => setActiveStatusFilter("all")}
+            >
+              All ({statusCounts.total || 0})
+            </button>
+            {Object.keys(STATUS_SORT_ORDER).map((status) => (
+              <button
+                key={status}
+                type="button"
+                className={`${styles.filterChip} ${
+                  activeStatusFilter === status ? styles.filterChipActive : ""
+                }`}
+                onClick={() => setActiveStatusFilter(status)}
+              >
+                {STATUS_LABELS[status] || status} ({statusCounts[status] || 0})
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {loading ? (
-        <div className={pageStyle.loading}>
-          <p>Loading team errors...</p>
+        <div className={styles.list}>
+          {Array.from({ length: 4 }).map((_, index) => (
+            <article
+              key={`skeleton-${index}`}
+              className={`${styles.card} ${styles.skeletonCard} ${styles.animatedCard}`}
+              style={{ "--stagger-index": index }}
+            >
+              <div className={styles.cardHeader}>
+                <div className={`${pageStyle.skeletonBlock} ${styles.skeletonTitle}`} />
+                <div className={`${pageStyle.skeletonBlock} ${styles.skeletonBadge}`} />
+              </div>
+              <div className={styles.meta}>
+                <div className={`${pageStyle.skeletonBlock} ${styles.skeletonMeta}`} />
+                <div className={`${pageStyle.skeletonBlock} ${styles.skeletonMeta}`} />
+                <div className={`${pageStyle.skeletonBlock} ${styles.skeletonMeta}`} />
+              </div>
+              <div className={styles.actions}>
+                <div className={`${pageStyle.skeletonBlock} ${styles.skeletonButton}`} />
+                <div className={`${pageStyle.skeletonBlock} ${styles.skeletonButton}`} />
+              </div>
+            </article>
+          ))}
         </div>
       ) : reports.length === 0 ? (
         emptyState
+      ) : visibleReports.length === 0 ? (
+        <div className={styles.emptyState}>
+          <p>No reports found for this status filter.</p>
+        </div>
       ) : (
         <div className={styles.list}>
-          {reports.map((report) => (
-            <article key={report.id} className={styles.card}>
+          {visibleReports.map((report, index) => (
+            <article
+              key={report.id}
+              className={`${styles.card} ${styles.animatedCard}`}
+              style={{ "--stagger-index": index }}
+            >
               <div className={styles.cardHeader}>
                 <p className={styles.title}>{report.message || "Untitled error"}</p>
                 <span

@@ -9,17 +9,26 @@ const Vendor = require("../modals/vendorModal");
 const Statement = require("../modals/statementModal");
 const { logProcess } = require("./processLogController");
 
-/** Normalize currency to ISO 4217 3-letter code using currency-symbol-map. Returns null if unknown. "$" defaults to USD. */
+/**
+ * Normalize currency to ISO 4217 3-letter code.
+ * For ambiguous symbols used by many currencies (e.g. "£"), prefer app defaults.
+ */
 function toISO4217Currency(input) {
     if (input == null || typeof input !== "string") return null;
     const s = input.trim();
     if (!s) return null;
-    if (s === "$" || s === "USD") return "USD";
+    const explicit = AMBIGUOUS_SYMBOL_DEFAULTS[s];
+    if (explicit) return explicit;
     const upper = s.toUpperCase();
     if (s.length === 3 && currencyToSymbolMap[upper]) return upper;
     const symbolToCode = symbolToCodeMap || (symbolToCodeMap = buildSymbolToCodeMap());
     return symbolToCode[s] || symbolToCode[upper] || null;
 }
+const AMBIGUOUS_SYMBOL_DEFAULTS = {
+    "$": "USD",
+    "£": "GBP",
+    "¥": "JPY",
+};
 let symbolToCodeMap = null;
 function buildSymbolToCodeMap() {
     const out = {};
