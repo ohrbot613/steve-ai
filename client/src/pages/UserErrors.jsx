@@ -5,19 +5,19 @@ import styles from "../scss/UserErrors.module.scss";
 
 const PAGE_SIZE = 20;
 const STATUS_OPTIONS = [
-  { value: "open", label: "Open Issue" },
+  { value: "open", label: "New Report" },
   { value: "reviewed_by_dev", label: "Under Review" },
-  { value: "in_dev", label: "Being Fixed" },
-  { value: "fixed", label: "Fix Ready for Check" },
+  { value: "in_dev", label: "Fix in Progress" },
+  { value: "fixed", label: "Ready for Your Review" },
   { value: "closed", label: "Closed" },
 ];
 
 const STATUS_LABELS = {
-  open: "Open Issue",
+  open: "New Report",
   reviewed_by_dev: "Under Review",
-  in_dev: "Being Fixed",
-  fixed: "Fix Ready for Check",
-  approved_by_client: "Confirmed by You",
+  in_dev: "Fix in Progress",
+  fixed: "Ready for Your Review",
+  approved_by_client: "Approved by You",
   closed: "Closed",
 };
 
@@ -192,7 +192,7 @@ export default function UserErrors() {
       if (editing?.id === report.id) {
         setEditing((prev) => (prev ? { ...prev, status: "approved_by_client" } : prev));
       }
-      setSuccessMessage("Report approved.");
+      setSuccessMessage("Report marked as approved.");
     } catch (err) {
       setError(err.message || "Failed to approve report.");
     } finally {
@@ -257,7 +257,7 @@ export default function UserErrors() {
       {!loading && reports.length > 0 ? (
         <section className={styles.controls}>
           <p className={styles.sortHint}>
-            Sorted by status (open items first), then most recently updated.
+            Sorted by status (new reports first), then most recently updated.
           </p>
           <div className={styles.filterChips}>
             <button
@@ -330,7 +330,7 @@ export default function UserErrors() {
                     styles[`status_${report.status}`] || styles.status_open
                   }`}
                 >
-                  {STATUS_LABELS[report.status] || "Open"}
+                  {STATUS_LABELS[report.status] || STATUS_LABELS.open}
                 </span>
               </div>
 
@@ -420,7 +420,7 @@ export default function UserErrors() {
                     onClick={() => handleApprove(report)}
                     disabled={deletingId === report.id || savingId === report.id}
                   >
-                    {savingId === report.id ? "Approving..." : "Approve"}
+                    {savingId === report.id ? "Approving..." : "Mark as Approved"}
                   </button>
                 )}
               </div>
