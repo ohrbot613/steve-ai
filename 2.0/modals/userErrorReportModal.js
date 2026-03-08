@@ -81,6 +81,15 @@ const userErrorReportSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    archived: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: false }
 );

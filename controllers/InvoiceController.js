@@ -171,18 +171,12 @@ exports.getInvoices = tryCatchAsync(async (req, res) => {
         baseQuery.paymentStatus = 'unpaid';
     }
 
-    // #region agent log
-    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:141',message:'Before populate - checking schema paths',data:{schemaPaths:Object.keys(Invoices.schema.paths),query:baseQuery},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     const invoices = await Invoices.find(baseQuery)
         .sort(sortObj)
         .populate('vendorId')
         .populate('statementId')
         .skip(offset)
         .limit(limit);
-    // #region agent log
-    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:147',message:'After populate query (should fail here)',data:{invoiceCount:invoices?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
 
     // Helper function to get reconciliation status value for sorting
     function getStatusValue(invoice) {
@@ -350,18 +344,12 @@ exports.getAllInvoices = tryCatchAsync(async (req, res) => {
     }
 
     // Fetch invoices with base query
-    // #region agent log
-    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:320',message:'Before populate - checking schema paths',data:{schemaPaths:Object.keys(Invoices.schema.paths),query:baseQuery},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
     let invoices = await Invoices.find(baseQuery)
         .sort(sortObj)
         .skip(offset)
         .limit(limit * 2) // Fetch more to account for filtering
         .populate('vendorId')
         .populate('statementId');
-    // #region agent log
-    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:328',message:'After populate query (should fail here)',data:{invoiceCount:invoices?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
 
     // Apply additional filtering for matched/missed (requires amount comparison)
     if (filter === 'matched' || filter === 'missed') {
@@ -428,15 +416,9 @@ exports.getAllInvoices = tryCatchAsync(async (req, res) => {
     let total;
     if (filter === 'matched' || filter === 'missed') {
         // Get all invoices matching the base query to count filtered results
-        // #region agent log
-        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:386',message:'Before populate - checking schema paths',data:{schemaPaths:Object.keys(Invoices.schema.paths),query:totalQuery},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         const allMatchingInvoices = await Invoices.find(totalQuery)
             .populate('vendorId')
             .populate('statementId');
-        // #region agent log
-        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:391',message:'After populate query (should fail here)',data:{invoiceCount:allMatchingInvoices?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         const filteredInvoices = allMatchingInvoices.filter(matchesFilter);
         total = filteredInvoices.length;
     } else {
@@ -539,9 +521,6 @@ async function logErrorToDatabase(processDoc, step, error, additionalDetails = {
 async function processSingleInvoiceFile(file, reqContext) {
     // This function contains the extracted logic from parseInvoices
     // It processes a single file and returns the result object (doesn't send response)
-    // #region agent log
-    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:487',message:'processSingleInvoiceFile entry',data:{fileName:file?.originalname,reqContextKeys:Object.keys(reqContext),hasXeroToken:!!reqContext?.xeroAccessToken,hasTenantId:!!reqContext?.xeroTenantId,hasProcessDoc:!!reqContext?.processDoc,currentFileIndex:reqContext?.currentFileIndex,totalFiles:reqContext?.totalFiles},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
     const xeroAccessToken = reqContext.xeroAccessToken;
     const xeroTenantId = reqContext.xeroTenantId;
     
@@ -2643,31 +2622,17 @@ Just return the raw extracted text exactly as it appears in the document, mainta
                 // Extract invoice number before try block so it's available in catch
                 let invoiceNumber = null;
                 try {
-                    // #region agent log
-                    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2229',message:'Entering matched invoice loop',data:{matchedCount:matchedInvoices.length,index:matchedInvoices.indexOf(match)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                    // #endregion
                     const fileInv = match.fileInvoice;
                     const xeroInv = match.xeroInvoice;
                     invoiceNumber = xeroInv ? xeroInv.invoiceNumber : (fileInv ? fileInv.invoiceNumber : null);
 
-                    // #region agent log
-                    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2235',message:'Invoice number extracted',data:{invoiceNumber:invoiceNumber,hasXeroInv:!!xeroInv,hasFileInv:!!fileInv},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-                    // #endregion
-
                     if (!invoiceNumber) {
                         log(`   ⚠️  Skipping invoice without invoice number`);
-                        // #region agent log
-                        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2238',message:'Skipping - no invoice number',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-                        // #endregion
                         continue;
                     }
 
                     // Check if invoice already exists
                     const existingInvoice = await findExistingInvoice(invoiceNumber, supplierInfo._id);
-
-                    // #region agent log
-                    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2243',message:'Found existing invoice',data:{existingInvoice:existingInvoice?existingInvoice._id:null,hasExisting:!!existingInvoice,isDeleted:existingInvoice?.isDeleted},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                    // #endregion
 
                     // Determine payment status: prefer file invoice status, then Xero invoice status, default to 'unpaid'
                     const paymentStatus = fileInv?.paymentStatus || xeroInv?.paymentStatus || 'unpaid';
@@ -2703,14 +2668,8 @@ Just return the raw extracted text exactly as it appears in the document, mainta
                         updatedCount++;
                         log(`   ✅ Updated existing invoice: ${invoiceNumber}`);
                     } else {
-                        // #region agent log
-                        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2276',message:'Entering else block to create invoice',data:{invoiceNumber:invoiceNumber,supplierInfoId:supplierInfo?supplierInfo._id:null,paymentStatus:paymentStatus,status:status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                        // #endregion
                         // Create new invoice (either doesn't exist or is deleted)
                         const generatedInvoiceId = uuidv4();
-                        // #region agent log
-                        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2305',message:'Generated invoiceId UUID',data:{generatedInvoiceId:generatedInvoiceId,type:typeof generatedInvoiceId,isNull:generatedInvoiceId===null,isUndefined:generatedInvoiceId===undefined},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                        // #endregion
                         const invoiceData = {
                             vendorDate: vendorDate,
                             xeroDate: xeroDate,
@@ -2726,28 +2685,12 @@ Just return the raw extracted text exactly as it appears in the document, mainta
                             statementId: logDoc?._id,
                             xeroInvoiceId: xeroInv?.InvoiceID || null
                         };
-                        // #region agent log
-                        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2322',message:'invoiceData before create',data:{invoiceId:invoiceData.invoiceId,hasInvoiceId:'invoiceId' in invoiceData,invoiceIdType:typeof invoiceData.invoiceId,invoiceDataKeys:Object.keys(invoiceData)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                        // #endregion
-                        // #region agent log
-                        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2325',message:'About to call SupplierInvoice.create',data:{invoiceData:invoiceData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                        // #endregion
-                     const test =   await SupplierInvoice.create(invoiceData);
-                     console.log("test📧", test);
-                        // #region agent log
-                        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2293',message:'SupplierInvoice.create completed',data:{createdCountBefore:createdCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                        // #endregion
+                        await SupplierInvoice.create(invoiceData);
                         createdCount++;
-                        // #region agent log
-                        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2294',message:'Incremented createdCount',data:{createdCountAfter:createdCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                        // #endregion
                         log(`   ➕ Created new invoice: ${invoiceNumber}`);
                     }
                 } catch (invoiceSaveError) {
                     console.log("invoiceSaveError📧", invoiceSaveError);
-                    // #region agent log
-                    fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2342',message:'Exception caught in invoice save',data:{error:invoiceSaveError?.message,errorCode:invoiceSaveError?.code,errorName:invoiceSaveError?.name,errorKeyPattern:invoiceSaveError?.keyPattern,errorKeyValue:invoiceSaveError?.keyValue,invoiceNumber:invoiceNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                    // #endregion
                     await logErrorToDatabase(reqContext.processDoc, 'invoice_save', invoiceSaveError, {
                         fileName: fileName,
                         invoiceNumber: invoiceNumber,
@@ -2837,11 +2780,7 @@ Just return the raw extracted text exactly as it appears in the document, mainta
             const totalProcessed = updatedCount + createdCount;
             const totalFromFile = formattedInvoices.invoices.length;
             const matchedCount = matchingResults.matchCount;
-            
-            // #region agent log
-            fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2382',message:'Final counts before logging',data:{updatedCount:updatedCount,createdCount:createdCount,totalProcessed:totalProcessed,matchedCount:matchedCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-            // #endregion
-            
+
             log(`✅ Processed ${totalProcessed} invoices to database:`);
             log(`   - Updated existing: ${updatedCount}`);
             log(`   - Created new: ${createdCount}`);
@@ -2922,9 +2861,6 @@ Just return the raw extracted text exactly as it appears in the document, mainta
             statementType: matchingResults.statementType, // Best ID analysis result (also at top level for easy access)
             savedToDatabase: supplierInfo && supplierInfo._id ? true : false
         };
-        // #region agent log
-        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2462',message:'processSingleInvoiceFile returning result',data:{returnKeys:Object.keys(returnValue),success:returnValue.success,invoiceCount:returnValue.invoiceCount,hasInvoices:Array.isArray(returnValue.invoices),hasMatching:!!returnValue.matching},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         return returnValue;
 
     } catch (error) {
@@ -2972,9 +2908,6 @@ Just return the raw extracted text exactly as it appears in the document, mainta
             }
         }
 
-        // #region agent log
-        fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2506',message:'processSingleInvoiceFile throwing error',data:{errorMessage:error?.message,errorName:error?.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-        // #endregion
         throw error;
     }
 }
@@ -3048,9 +2981,6 @@ exports.parseInvoices = tryCatchAsync(async (req, res) => {
     if (files.length === 1) {
         req.file = files[0];
         try {
-            // #region agent log
-            fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2538',message:'parseInvoices single file - calling processSingleInvoiceFile',data:{fileName:files[0]?.originalname,hasXeroToken:!!req.xeroAccessToken,hasTenantId:!!req.xeroTenantId,hasProcessDoc:!!processDoc},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-            // #endregion
             const reqContext = {
                 xeroAccessToken: req.xeroAccessToken,
                 xeroTenantId: req.xeroTenantId,
@@ -3059,19 +2989,9 @@ exports.parseInvoices = tryCatchAsync(async (req, res) => {
                 currentFileIndex: 1,
                 totalFiles: 1
             };
-            // #region agent log
-            fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2545',message:'parseInvoices single file - reqContext prepared',data:{reqContextKeys:Object.keys(reqContext),hasProcessDoc:!!reqContext.processDoc,hasXeroToken:!!reqContext.xeroAccessToken,hasTenantId:!!reqContext.xeroTenantId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-            // #endregion
             const result = await processSingleInvoiceFile(files[0], reqContext);
-            // #region agent log
-            fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2549',message:'parseInvoices single file - processSingleInvoiceFile returned',data:{resultKeys:Object.keys(result),hasSuccess:result?.success!==undefined,hasInvoices:Array.isArray(result?.invoices),invoiceCount:result?.invoiceCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-            // #endregion
-            
             return res.status(200).json(result);
         } catch (error) {
-            // #region agent log
-            fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2550',message:'parseInvoices single file - error caught',data:{errorMessage:error?.message,errorName:error?.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-            // #endregion
             return res.status(500).json({
                 success: false,
                 message: error.message || 'Failed to parse invoices',
@@ -3085,9 +3005,6 @@ exports.parseInvoices = tryCatchAsync(async (req, res) => {
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             try {
-                // #region agent log
-                fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2563',message:'parseInvoices batch - calling processSingleInvoiceFile',data:{fileName:file?.originalname,fileIndex:i+1,totalFiles:files.length,hasProcessDoc:!!processDoc},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-                // #endregion
                 const result = await processSingleInvoiceFile(file, {
                     xeroAccessToken: req.xeroAccessToken,
                     xeroTenantId: req.xeroTenantId,
@@ -3096,19 +3013,12 @@ exports.parseInvoices = tryCatchAsync(async (req, res) => {
                     currentFileIndex: i + 1,
                     totalFiles: files.length
                 });
-                // #region agent log
-                fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2571',message:'parseInvoices batch - processSingleInvoiceFile returned',data:{fileName:file?.originalname,resultKeys:Object.keys(result),hasSuccess:result?.success!==undefined,hasInvoices:Array.isArray(result?.invoices)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-                // #endregion
-                
                 results.push({
                     fileName: file.originalname,
                     success: true,
                     ...result
                 });
             } catch (error) {
-                // #region agent log
-                fetch('http://127.0.0.1:7247/ingest/2dc7fe15-1c06-471a-9881-89688dd19a20',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'InvoiceController.js:2578',message:'parseInvoices batch - error caught',data:{fileName:file?.originalname,errorMessage:error?.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-                // #endregion
                 errors.push({
                     fileName: file.originalname,
                     success: false,

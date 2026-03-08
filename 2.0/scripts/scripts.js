@@ -64,6 +64,39 @@ function compactForm(s) {
 }
 
 /**
+ * Get initials from a name: first letter of each word, lowercase.
+ * Uses same normalization as compare (e.g. "A.B.C." and "Acme Building Company" -> "abc").
+ * Single word that looks like an acronym (2-8 letters) is returned as-is (e.g. "KHIP" -> "khip")
+ * so it matches "Khaled Hamada Intellectual Property" -> "khip".
+ */
+function getInitials(name) {
+    const n = normalizeForCompare(name);
+    if (!n.length) return "";
+    const words = n.split(/\s+/).filter(Boolean);
+    if (words.length === 1) {
+        const w = words[0];
+        if (w.length >= 2 && w.length <= 8 && /^[a-z]+$/.test(w)) {
+            return w;
+        }
+    }
+    return words.map((w) => w.charAt(0)).join("");
+}
+
+/**
+ * Similarity score (0-1) based only on initials match.
+ * Exact match -> 0.85 (>= 0.8). Partial (query initials contained in name initials) -> lower. Too short -> 0.
+ */
+function initialsSimilarity(query, name) {
+    const qInit = getInitials(query);
+    const nInit = getInitials(name);
+    if (qInit.length < 2 || nInit.length < 2) return 0;
+    if (qInit === nInit) return 0.85;
+    if (nInit.includes(qInit)) return Math.max(0.8, 0.7 + 0.15 * (qInit.length / nInit.length));
+    if (qInit.includes(nInit)) return Math.max(0.8, 0.7 + 0.15 * (nInit.length / qInit.length));
+    return 0;
+}
+
+/**
  * Similarity score between 0 and 1 (higher = more similar).
  * - Exact and normalized match
  * - Bidirectional substring: full query vs short name (e.g. "ASTW SPECIALISED..." finds "ASTW") and vice versa
@@ -793,6 +826,34 @@ async function searchSimilarVendors(query, limit = 10) {
     return { query: q, limit: lim, matches: withCloseRanks };
 }
 
+/**
+ * Search vendors by initials only. Same candidate set as searchSimilarVendors; scores with initialsSimilarity.
+ * Returns { query, limit, matches } (each match: name, xeroId, score, similarityToQuery).
+ */
+async function searchSimilarVendorsByInitials(query, limit = 10) {
+    const q = String(query || "").trim();
+    const lim = Math.min(Math.max(1, parseInt(limit, 10) || 10), 50);
+
+    const candidates = await Vendor.find({ isDeleted: { $ne: true } })
+        .select("name xeroId email")
+        .limit(SIMILARITY_SEARCH_CANDIDATE_LIMIT)
+        .lean();
+
+    const scored = candidates.map((v) => ({
+        ...v,
+        score: initialsSimilarity(q, v.name),
+    }));
+
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, lim).map(({ score, ...v }) => ({
+        ...v,
+        score: Math.round(score * 1000) / 1000,
+        similarityToQuery: Math.round(score * 1000) / 1000,
+    }));
+
+    return { query: q, limit: lim, matches: top };
+}
+
 /** Strip letters for invoice-number comparison (same as findInvoiceById). */
 function idNoLetters(s) {
     return String(s || "").replace(/[a-zA-Z]/g, "");
@@ -900,9 +961,24 @@ function scoreInvoiceMatch(fileInvoice, fileDate, dbInvoice) {
 }
 
 exports.searchSimilarVendors = searchSimilarVendors;
+exports.searchSimilarVendorsByInitials = searchSimilarVendorsByInitials;
+exports.getInitials = getInitials;
+exports.initialsSimilarity = initialsSimilarity;
 exports.findCloseInvoiceMatchesInDb = findCloseInvoiceMatchesInDb;
 exports.scoreInvoiceMatch = scoreInvoiceMatch;
 exports.nameSimilarity = nameSimilarity;
+
+const SEARCH_SIMILAR_THRESHOLD = 0.8;
+const SIGNIFICANT_INVOICE_RATIO = 2;
+
+async function getInvoiceCountsByXeroId(xeroIds) {
+    if (!xeroIds.length) return {};
+    const rows = await Invoice.aggregate([
+        { $match: { contactId: { $in: xeroIds }, isDeleted: { $ne: true } } },
+        { $group: { _id: "$contactId", invoiceCount: { $sum: 1 } } },
+    ]);
+    return Object.fromEntries(rows.map((r) => [r._id, r.invoiceCount]));
+}
 
 exports.searchSimilarNames = tryCatchAsync(async (req, res) => {
     const q = (req.body?.q ?? req.query?.q ?? "").toString().trim();
@@ -918,10 +994,93 @@ exports.searchSimilarNames = tryCatchAsync(async (req, res) => {
         });
     }
 
-    const data = await searchSimilarVendors(q, limit);
+    const [fullNameResult, initialsResult] = await Promise.all([
+        searchSimilarVendors(q, limit),
+        searchSimilarVendorsByInitials(q, limit),
+    ]);
+
+    const group1Matches = (fullNameResult.matches || [])
+        .filter((m) => (Number(m.score) ?? m.similarityToQuery ?? 0) > SEARCH_SIMILAR_THRESHOLD)
+        .slice(0, limit)
+        .map((m) => ({ ...m, group: 1 }));
+    const group2Matches = (initialsResult.matches || [])
+        .filter((m) => (Number(m.score) ?? m.similarityToQuery ?? 0) >= SEARCH_SIMILAR_THRESHOLD)
+        .slice(0, limit)
+        .map((m) => ({ ...m, group: 2 }));
+
+    const seenXeroIds = new Set();
+    const combined = [];
+    for (const m of group1Matches) {
+        if (m.xeroId && !seenXeroIds.has(m.xeroId)) {
+            seenXeroIds.add(m.xeroId);
+            combined.push(m);
+        }
+    }
+    for (const m of group2Matches) {
+        if (m.xeroId && !seenXeroIds.has(m.xeroId)) {
+            seenXeroIds.add(m.xeroId);
+            combined.push(m);
+        }
+    }
+    const matches = combined.slice(0, limit);
+
+    let chosenVendor = null;
+    let countMap = {};
+    if (matches.length > 0) {
+        const xeroIds = matches.map((m) => m.xeroId).filter(Boolean);
+        countMap = await getInvoiceCountsByXeroId(xeroIds);
+        const withCounts = matches.map((m) => ({
+            ...m,
+            invoiceCount: Number(countMap[m.xeroId]) || 0,
+        }));
+        withCounts.sort((a, b) => {
+            if (b.invoiceCount !== a.invoiceCount) return b.invoiceCount - a.invoiceCount;
+            const aScore = Number(a.score ?? a.similarityToQuery ?? 0);
+            const bScore = Number(b.score ?? b.similarityToQuery ?? 0);
+            return bScore - aScore;
+        });
+        const top = withCounts[0];
+        const second = withCounts[1];
+        if (
+            top?.xeroId &&
+            second &&
+            top.invoiceCount > 0 &&
+            top.invoiceCount >= second.invoiceCount * SIGNIFICANT_INVOICE_RATIO
+        ) {
+            chosenVendor = {
+                name: top.name,
+                xeroId: top.xeroId,
+                score: Number(top.score ?? top.similarityToQuery ?? 0),
+                group: top.group,
+                invoiceCount: top.invoiceCount,
+            };
+        } else {
+            const bestFromGroup1 = matches.find((m) => m.group === 1) || matches[0];
+            if (bestFromGroup1?.xeroId) {
+                chosenVendor = {
+                    name: bestFromGroup1.name,
+                    xeroId: bestFromGroup1.xeroId,
+                    score: Number(bestFromGroup1.score ?? bestFromGroup1.similarityToQuery ?? 0),
+                    group: bestFromGroup1.group,
+                    invoiceCount: Number(countMap[bestFromGroup1.xeroId]) || 0,
+                };
+            }
+        }
+    }
+
+    const matchesWithCounts = matches.map((m) => ({
+        ...m,
+        invoiceCount: Number(countMap[m.xeroId]) || 0,
+    }));
+
     res.status(200).json({
         success: true,
-        ...data,
+        query: q,
+        limit,
+        matches: matchesWithCounts,
+        group1Count: group1Matches.length,
+        group2Count: group2Matches.length,
+        chosenVendor,
     });
 });
 

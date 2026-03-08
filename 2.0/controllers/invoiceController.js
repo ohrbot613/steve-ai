@@ -3,7 +3,8 @@ const path = require("path");
 const multer = require("multer");
 const currencyToSymbolMap = require("currency-symbol-map/map");
 const { getCompaniesFromFile, getInvoicesFromFileWithAIVision } = require("./utilsController");
-const { searchSimilarVendors, findCloseInvoiceMatchesInDb, nameSimilarity } = require("../scripts/scripts");
+const { getCompaniesFromFile: getCompaniesFromFileBeta, getInvoicesFromFileWithAIVision: getInvoicesFromFileWithAIVisionBeta, runWithConcurrency, runWithConcurrencyAndProgress } = require("./utilsControllerBeta");
+const { searchSimilarVendors, searchSimilarVendorsByInitials, findCloseInvoiceMatchesInDb, nameSimilarity } = require("../scripts/scripts");
 const Invoice = require("../modals/invoiceModal");
 const Vendor = require("../modals/vendorModal");
 const Statement = require("../modals/statementModal");
@@ -119,6 +120,22 @@ function parseInvoicesFromAIResponse(rawString) {
     }
     const invoices = Array.isArray(obj?.invoices) ? obj.invoices : [];
     const fileDate = obj?.fileDate ?? null;
+
+    // If an invoice has only one date (invoiceDate present, dateDue missing),
+    // treat that single date as the due date by moving it to dateDue and clearing invoiceDate.
+    for (const inv of invoices) {
+        const hasDue = inv.dateDue != null || inv.dueDate != null;
+        const singleDate = inv.invoiceDate ?? inv.date ?? inv.dateDue ?? inv.dueDate;
+        if (!hasDue && singleDate != null) {
+            inv.dateDue = singleDate;
+            if (inv.dueDate == null) inv.dueDate = singleDate;
+            // Clear invoiceDate so downstream 'date' remains blank when only a due date exists.
+            if (inv.invoiceDate != null) inv.invoiceDate = null;
+        }
+    }
+
+    
+
     return { fileDate, invoices };
 }
 
@@ -171,6 +188,7 @@ async function getInvoicesFromFile(result, fileName) {
             potentialInvoiceIds.length > 0 ? potentialInvoiceIds : null
         );
         const parsed = parseInvoicesFromAIResponse(aiResponse);
+        
         const currencies = [...new Set((parsed.invoices || []).map((inv) => inv.currency).filter(Boolean))];
         console.log("[invoiceFileUpload] getInvoicesFromFile: done", { invoiceCount: parsed.invoices?.length ?? 0, fileDate: parsed.fileDate, currencyOfFile: currencies });
         console.log(PARSE_FILE_LOG, "getInvoicesFromFile OUTCOME", { fileName: fn, success: true, fileDate: parsed.fileDate, invoiceCount: parsed.invoices?.length ?? 0, currencyOfFile: currencies, invoices: (parsed.invoices || []).map((inv) => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, currency: inv.currency })) });
@@ -184,9 +202,32 @@ async function getInvoicesFromFile(result, fileName) {
 async function selectBestVendor(firstCompanyName) {
     console.log("[invoiceFileUpload] selectBestVendor: start", { firstCompanyName });
     const similarSearch = await searchSimilarVendors(firstCompanyName, 10);
-    const matchesAbove08 = (similarSearch.matches || []).filter(
-        (m) => (Number(m.score) ?? m.similarityToQuery ?? 0) > SIMILARITY_THRESHOLD
-    );
+    const initialsSearch = await searchSimilarVendorsByInitials(firstCompanyName, 10);
+
+    const group1Matches = (similarSearch.matches || [])
+        .filter((m) => (Number(m.score) ?? m.similarityToQuery ?? 0) > SIMILARITY_THRESHOLD)
+        .slice(0, 5)
+        .map((m) => ({ ...m, group: 1 }));
+    const group2Matches = (initialsSearch.matches || [])
+        .filter((m) => (Number(m.score) ?? m.similarityToQuery ?? 0) >= SIMILARITY_THRESHOLD)
+        .slice(0, 5)
+        .map((m) => ({ ...m, group: 2 }));
+
+    const seenXeroIds = new Set();
+    const combined = [];
+    for (const m of group1Matches) {
+        if (m.xeroId && !seenXeroIds.has(m.xeroId)) {
+            seenXeroIds.add(m.xeroId);
+            combined.push(m);
+        }
+    }
+    for (const m of group2Matches) {
+        if (m.xeroId && !seenXeroIds.has(m.xeroId)) {
+            seenXeroIds.add(m.xeroId);
+            combined.push(m);
+        }
+    }
+    const matchesAbove08 = combined;
 
     let preferredVendorId = null;
     let decision = {
@@ -194,6 +235,9 @@ async function selectBestVendor(firstCompanyName) {
         closeCall: false,
         closeCallDelta: null,
         invoiceCounts: [],
+        group1Count: group1Matches.length,
+        group2Count: group2Matches.length,
+        chosenGroup: null,
     };
 
     if (matchesAbove08.length >= 2) {
@@ -240,15 +284,34 @@ async function selectBestVendor(firstCompanyName) {
             ) {
                 preferredVendorId = highest.xeroId;
                 decision.reason = "close_call_invoice_count_override";
+                decision.chosenGroup = highest.group;
                 decision.overrideVendor = {
                     name: highest.name,
                     xeroId: highest.xeroId,
                     invoiceCount: highest.invoiceCount,
                 };
             } else {
-                decision.reason = "close_call_no_significant_count_gap";
+                const bestFromGroup1 = matchesAbove08.filter((m) => m.group === 1).sort((a, b) => (Number(b.score ?? b.similarityToQuery ?? 0) - Number(a.score ?? a.similarityToQuery ?? 0)))[0];
+                if (bestFromGroup1?.xeroId) {
+                    preferredVendorId = bestFromGroup1.xeroId;
+                    decision.reason = "close_call_default_to_group1";
+                    decision.chosenGroup = 1;
+                } else {
+                    const fallback = matchesAbove08[0];
+                    if (fallback?.xeroId) {
+                        preferredVendorId = fallback.xeroId;
+                        decision.reason = "close_call_default_to_first";
+                        decision.chosenGroup = fallback.group;
+                    } else {
+                        decision.reason = "close_call_no_significant_count_gap";
+                    }
+                }
             }
         }
+    } else if (matchesAbove08.length === 1 && matchesAbove08[0]?.xeroId) {
+        preferredVendorId = matchesAbove08[0].xeroId;
+        decision.reason = "single_match";
+        decision.chosenGroup = matchesAbove08[0].group;
     }
 
     console.log("[invoiceFileUpload] selectBestVendor: decision", {
@@ -338,7 +401,7 @@ function buildCandidateSuppliers(matchesAbove08) {
     }));
 }
 
-function buildNeedsSupplierInputResult({ fileName, storedFile, fileDate, invoices, reason, message, candidateSuppliers = [] }) {
+function buildNeedsSupplierInputResult({ fileName, storedFile, fileDate, invoices, reason, message, candidateSuppliers = [], taskLog = [] }) {
     return {
         success: false,
         status: NEEDS_SUPPLIER_INPUT_STATUS,
@@ -347,6 +410,7 @@ function buildNeedsSupplierInputResult({ fileName, storedFile, fileDate, invoice
         fileName,
         candidateSuppliers,
         invoices,
+        taskLog,
         unresolvedUpload: {
             fileName,
             storedFile,
@@ -387,19 +451,187 @@ async function prepareOneFileUpload(file, options = {}) {
     const allowManualSupplierInput = Boolean(options.allowManualSupplierInput);
     const fileName = getFileName(file);
     const fileSize = file.buffer ? file.buffer.length : 0;
+    const startMs = Date.now();
+    const taskLog = [];
+    const pushTask = (name, taskStartMs) => {
+        taskLog.push({ task: name, elapsedSec: ((Date.now() - taskStartMs) / 1000).toFixed(2) + "s" });
+    };
     console.log(PARSE_FILE_LOG, "prepareOneFileUpload CALL", { fileName, fileSize });
 
-    const { companyNames: rawCompanyNames } = await getCompaniesFromFile(file.buffer, fileName);
+    let taskStart = Date.now();
+    const [companyResult, visionResult] = await Promise.all([
+        getCompaniesFromFile(file.buffer, fileName),
+        getInvoicesFromFileWithAIVision(file.buffer, fileName),
+    ]);
+    pushTask("getCompaniesFromFile", taskStart);
+    pushTask("getInvoicesFromFileWithAIVision", taskStart);
+    const rawCompanyNames = companyResult?.companyNames ?? [];
+    const fileDate = visionResult?.fileDate ?? null;
+    const invoicesFromAIVision = visionResult?.invoices ?? [];
     let companyNames = rawCompanyNames.filter((entry) => !isExcludedName(entry.name));
     companyNames = companyNames.filter((entry) => (Number(entry.confidence) || 0) > SIMILARITY_THRESHOLD);
     companyNames = ensureThreeSlots(companyNames);
     companyNames = deduplicateConfidences(companyNames);
 
-    const { fileDate, invoices: invoicesFromAIVision } = await getInvoicesFromFileWithAIVision(file.buffer, fileName);
     const invoices = invoicesFromAIVision ?? [];
+    taskStart = Date.now();
     const storedFile = persistUploadedFile(file.buffer, fileName);
+    pushTask("persistUploadedFile", taskStart);
     const currencyOfFile = [...new Set(invoices.map((inv) => inv.currency).filter(Boolean))];
     console.log(PARSE_FILE_LOG, "prepareOneFileUpload DATA after getInvoicesFromFileWithAIVision", {
+        fileName,
+        fileDate,
+        invoiceCount: invoices.length,
+        currencyOfFile,
+        invoices: invoices.map((inv) => ({ invoiceNumber: inv.invoiceNumber, amount: inv.amount, currency: inv.currency, dateDue: inv.dateDue, invoiceDate: inv.invoiceDate })),
+    });
+    
+
+    const first = companyNames[0];
+    if (!first || !String(first.name || "").trim()) {
+        if (allowManualSupplierInput) {
+            return buildNeedsSupplierInputResult({
+                fileName,
+                storedFile,
+                fileDate,
+                invoices,
+                reason: "no_supplier_detected",
+                message: "We couldn't identify a supplier from this file. Enter the supplier name to continue.",
+                candidateSuppliers: [],
+                taskLog,
+            });
+        }
+        throw new Error("We couldn't identify a supplier in this file. Please check the file and try again.");
+    }
+
+    taskStart = Date.now();
+    const { matchesAbove08, preferredVendorId } = await selectBestVendor(first.name);
+    pushTask("selectBestVendor", taskStart);
+    const allowedContactIds = new Set(
+        (matchesAbove08 || []).map((m) => m.xeroId).filter(Boolean)
+    );
+    taskStart = Date.now();
+    const dbCloseMatches = await findCloseInvoiceMatchesInDb(invoices, {
+        threshold: 0.8,
+        contactIds: allowedContactIds.size > 0 ? [...allowedContactIds] : null,
+    });
+    pushTask("findCloseInvoiceMatchesInDb", taskStart);
+
+    const supplierMatchCounts = {};
+    for (const row of dbCloseMatches) {
+        const matchCount = row.matches.length;
+        if (matchCount === 0) continue;
+        const weight = 1 / matchCount;
+        for (const { dbInvoice } of row.matches) {
+            const id = dbInvoice.contactId ?? "unknown";
+            if (!allowedContactIds.size || allowedContactIds.has(id)) {
+                supplierMatchCounts[id] = (supplierMatchCounts[id] || 0) + weight;
+            }
+        }
+    }
+    const supplierMatchCountList = Object.entries(supplierMatchCounts)
+        .map(([contactId, count]) => ({ contactId, count: Math.round(count * 1000) / 1000 }))
+        .sort((a, b) => b.count - a.count);
+
+    if (supplierMatchCountList.length === 0 && matchesAbove08?.length > 1 && !preferredVendorId) {
+        const candidateSuppliers = buildCandidateSuppliers(matchesAbove08);
+        if (allowManualSupplierInput) {
+            return buildNeedsSupplierInputResult({
+                fileName,
+                storedFile,
+                fileDate,
+                invoices,
+                reason: "ambiguous_supplier",
+                message: "We couldn't confidently choose a supplier. Enter the supplier name to continue.",
+                candidateSuppliers,
+                taskLog,
+            });
+        }
+        const err = new Error("Could not determine the best vendor. Please select the best vendor from the list.");
+        err.statusCode = 409;
+        err.invoices = invoices;
+        err.companyNames = matchesAbove08;
+        throw err;
+    }
+
+    const selectedVendor = supplierMatchCountList[0]?.contactId ?? preferredVendorId ?? matchesAbove08?.[0]?.xeroId;
+    if (!selectedVendor) {
+        if (allowManualSupplierInput) {
+            return buildNeedsSupplierInputResult({
+                fileName,
+                storedFile,
+                fileDate,
+                invoices,
+                reason: "no_vendor_match",
+                message: "We couldn't match this file to a supplier. Enter the supplier name to continue.",
+                candidateSuppliers: buildCandidateSuppliers(matchesAbove08),
+                taskLog,
+            });
+        }
+        throw new Error("We couldn't match this file to a supplier. Please add the supplier in Reconciliation first.");
+    }
+
+    taskStart = Date.now();
+    await Vendor.updateOne(
+        { xeroId: selectedVendor, supplier: { $ne: true } },
+        { $set: { supplier: true, modifiedLast: new Date() } }
+    );
+    const dateOnFile = parseInvoiceDate(fileDate);
+    const statement = await Statement.create({
+        contactId: selectedVendor,
+        file: storedFile,
+        isDeleted: false,
+        dateOnFile,
+    });
+    pushTask("createStatement", taskStart);
+
+    const outcome = {
+        vendorId: selectedVendor,
+        invoices,
+        statementId: statement._id,
+        taskLog,
+    };
+    console.log(PARSE_FILE_LOG, "prepareOneFileUpload OUTCOME", {
+        fileName,
+        success: true,
+        vendorId: selectedVendor,
+        statementId: statement._id,
+        invoiceCount: invoices.length,
+        currencyOfFile,
+    });
+    const elapsedMs = Date.now() - startMs;
+    console.log(PARSE_FILE_LOG, "prepareOneFileUpload ELAPSED", { fileName, elapsedMs });
+    return outcome;
+}
+
+/**
+ * Same as prepareOneFileUpload but uses utilsControllerBeta (page extraction, downscale, parallel vision).
+ * Used by the beta upload route only.
+ */
+async function prepareOneFileUploadBeta(file, options = {}) {
+    const allowManualSupplierInput = Boolean(options.allowManualSupplierInput);
+    const fileName = getFileName(file);
+    const fileSize = file.buffer ? file.buffer.length : 0;
+    const startMs = Date.now();
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadBeta CALL", { fileName, fileSize });
+
+    const { companyNames: rawCompanyNames } = await getCompaniesFromFileBeta(file.buffer, fileName);
+    const afterCompaniesMs = Date.now();
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadBeta getCompaniesFromFile elapsedMs", { fileName, elapsedMs: afterCompaniesMs - startMs });
+    let companyNames = rawCompanyNames.filter((entry) => !isExcludedName(entry.name));
+    companyNames = companyNames.filter((entry) => (Number(entry.confidence) || 0) > SIMILARITY_THRESHOLD);
+    companyNames = ensureThreeSlots(companyNames);
+    companyNames = deduplicateConfidences(companyNames);
+
+    const { fileDate, invoices: invoicesFromAIVision } = await getInvoicesFromFileWithAIVisionBeta(file.buffer, fileName);
+    const afterAIVisionMs = Date.now();
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadBeta getInvoicesFromFileWithAIVision elapsedMs", { fileName, elapsedMs: afterAIVisionMs - afterCompaniesMs });
+    const invoices = invoicesFromAIVision ?? [];
+    const storedFile = persistUploadedFile(file.buffer, fileName);
+    const afterPersistMs = Date.now();
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadBeta persistUploadedFile elapsedMs", { fileName, elapsedMs: afterPersistMs - afterAIVisionMs });
+    const currencyOfFile = [...new Set(invoices.map((inv) => inv.currency).filter(Boolean))];
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadBeta DATA after getInvoicesFromFileWithAIVision", {
         fileName,
         fileDate,
         invoiceCount: invoices.length,
@@ -484,7 +716,6 @@ async function prepareOneFileUpload(file, options = {}) {
         throw new Error("We couldn't match this file to a supplier. Please add the supplier in Reconciliation first.");
     }
 
-    // When a supply matches, ensure vendor is marked as supplier if not already
     await Vendor.updateOne(
         { xeroId: selectedVendor, supplier: { $ne: true } },
         { $set: { supplier: true, modifiedLast: new Date() } }
@@ -503,14 +734,17 @@ async function prepareOneFileUpload(file, options = {}) {
         invoices,
         statementId: statement._id,
     };
-    console.log(PARSE_FILE_LOG, "prepareOneFileUpload OUTCOME", {
+    const elapsedMs = Date.now() - startMs;
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadBeta OUTCOME", {
         fileName,
         success: true,
         vendorId: selectedVendor,
         statementId: statement._id,
         invoiceCount: invoices.length,
         currencyOfFile,
+        elapsedMs,
     });
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadBeta ELAPSED", { fileName, elapsedMs });
     return outcome;
 }
 
@@ -519,6 +753,7 @@ async function prepareOneFileUpload(file, options = {}) {
  * Accepts a single file (PDF or Excel), parses it and returns parsed result.
  */
 exports.invoiceFileUpload = tryCatchAsync(async (req, res, next) => {
+    const startMs = Date.now();
     const file = validateUpload(req, res);
     if (!file) {
         console.log("[invoiceFileUpload] validateUpload: no file");
@@ -530,17 +765,22 @@ exports.invoiceFileUpload = tryCatchAsync(async (req, res, next) => {
     try {
         const body = await prepareOneFileUpload(file, { allowManualSupplierInput: true });
         if (body?.status === NEEDS_SUPPLIER_INPUT_STATUS) {
+            const elapsedMs409 = Date.now() - startMs;
+            console.log(PARSE_FILE_LOG, "invoiceFileUpload ELAPSED (needs supplier input)", { fileName, elapsedMs: elapsedMs409 });
             return res.status(409).json(body);
         }
         req.body.vendorId = body.vendorId;
         req.body.invoices = body.invoices;
         req.body.statementId = body.statementId;
+        req.body.taskLog = body.taskLog;
         return exports.completeInvoiceFileUpload(req, res, (err) => {
             if (err) sendParseError(err, res);
         });
     } catch (err) {
         console.log(PARSE_FILE_LOG, "invoiceFileUpload OUTCOME", { fileName, success: false, error: err.message, statusCode: err.statusCode });
         console.error("[invoiceFileUpload] catch", err);
+        const elapsedMsErr = Date.now() - startMs;
+        console.log(PARSE_FILE_LOG, "invoiceFileUpload ELAPSED (error)", { fileName, elapsedMs: elapsedMsErr });
         if (err.statusCode === 409) {
             return res.status(409).json({
                 success: false,
@@ -551,7 +791,50 @@ exports.invoiceFileUpload = tryCatchAsync(async (req, res, next) => {
         }
         sendParseError(err, res);
     }
-})
+});
+
+/**
+ * POST /invoice/invoice-file-upload-beta
+ * Same as invoice-file-upload but uses beta parser (page extraction, downscale, parallel vision).
+ */
+exports.invoiceFileUploadBeta = tryCatchAsync(async (req, res, next) => {
+    const startMs = Date.now();
+    const file = validateUpload(req, res);
+    if (!file) {
+        console.log("[invoiceFileUploadBeta] validateUpload: no file");
+        return;
+    }
+    const fileName = getFileName(file);
+    console.log(PARSE_FILE_LOG, "invoiceFileUploadBeta CALL", { fileName });
+    try {
+        const body = await prepareOneFileUploadBeta(file, { allowManualSupplierInput: true });
+        if (body?.status === NEEDS_SUPPLIER_INPUT_STATUS) {
+            const elapsedMs409 = Date.now() - startMs;
+            console.log(PARSE_FILE_LOG, "invoiceFileUploadBeta ELAPSED (needs supplier input)", { fileName, elapsedMs: elapsedMs409 });
+            return res.status(409).json(body);
+        }
+        req.body.vendorId = body.vendorId;
+        req.body.invoices = body.invoices;
+        req.body.statementId = body.statementId;
+        return exports.completeInvoiceFileUpload(req, res, (err) => {
+            if (err) sendParseError(err, res);
+        });
+    } catch (err) {
+        console.log(PARSE_FILE_LOG, "invoiceFileUploadBeta OUTCOME", { fileName, success: false, error: err.message, statusCode: err.statusCode });
+        console.error("[invoiceFileUploadBeta] catch", err);
+        const elapsedMsErr = Date.now() - startMs;
+        console.log(PARSE_FILE_LOG, "invoiceFileUploadBeta ELAPSED (error)", { fileName, elapsedMs: elapsedMsErr });
+        if (err.statusCode === 409) {
+            return res.status(409).json({
+                success: false,
+                invoices: err.invoices,
+                companyNames: err.companyNames,
+                message: err.message,
+            });
+        }
+        sendParseError(err, res);
+    }
+});
 
 
 function parseInvoiceDate(value) {
@@ -570,6 +853,7 @@ function parseInvoiceDate(value) {
  * @param {{ skipProcessLog?: boolean }} [options] - If true, do not create a process log (caller will log once for batch).
  */
 async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
+    const completeStartMs = Date.now();
     const { vendorId, invoices, statementId } = body;
     const vendor = await Vendor.findOne({ xeroId: vendorId, isDeleted: { $ne: true } });
     if (!vendor) throw new Error("We couldn't match this file to a supplier. Please add the supplier in Reconciliation first.");
@@ -647,8 +931,10 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
             : (fileInv.invoiceNumber ?? "");
         if (!canonicalNumber.trim()) continue;
 
-        const dateVal = parseInvoiceDate(fileInv.invoiceDate ?? fileInv.dateDue);
+        
+        const dateVal = parseInvoiceDate(fileInv.invoiceDate); // do NOT fall back to dateDue - leave invoice date blank if not present
         const dueDateVal = parseInvoiceDate(fileInv.dateDue ?? fileInv.dueDate);
+        
         const updatePayload = {
             invoiceNumber: canonicalNumber.trim(),
             amount: fileInv.amount != null ? Number(fileInv.amount) : null,
@@ -723,6 +1009,8 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
         }
     }
 
+    const taskLog = Array.isArray(body.taskLog) ? [...body.taskLog] : [];
+    taskLog.push({ task: "completeInvoiceFileUpload", elapsedSec: ((Date.now() - completeStartMs) / 1000).toFixed(2) + "s" });
     const result = {
         success: true,
         vendorId,
@@ -733,6 +1021,7 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
         matchCount,
         createdCount: created.length,
         created: created.map((inv) => ({ _id: inv._id, invoiceNumber: inv.invoiceNumber, amount: inv.amount, date: inv.date, dueDate: inv.dueDate, currency: inv.currency })),
+        taskLog,
     };
     console.log(PARSE_FILE_LOG, "completeInvoiceFileUploadLogic OUTCOME", {
         statementId,
@@ -820,9 +1109,362 @@ exports.continueUnresolvedInvoiceUpload = tryCatchAsync(async (req, res) => {
     });
 });
 
+const BATCH_UPLOAD_CONCURRENCY = Number(process.env.BATCH_UPLOAD_CONCURRENCY) || 50;
+
+const DETECT_COMPANIES_CONCURRENCY = Number(process.env.DETECT_COMPANIES_CONCURRENCY) || 20;
+
+/**
+ * POST /invoice/batch-detect-companies
+ * Accepts multiple files; runs company detection (file name + file contents) in parallel for each.
+ * Returns per-file detection result and list of file names that need manual supplier input.
+ */
+exports.batchDetectCompanies = tryCatchAsync(async (req, res) => {
+    const files = req.files || [];
+    if (files.length === 0) {
+        return res.status(400).json({ success: false, message: "Please add at least one file to upload." });
+    }
+    console.log(PARSE_FILE_LOG, "batchDetectCompanies CALL", { fileCount: files.length, fileNames: files.map((f) => f.originalname || f.name) });
+
+    const tasks = files.map((file) => {
+        const fileLabel = file.originalname || file.name;
+        return async () => {
+            try {
+                const buffer = file.buffer;
+                const { companyNames: rawCompanyNames } = await getCompaniesFromFile(buffer, fileLabel);
+                let companyNames = rawCompanyNames.filter((entry) => !isExcludedName(entry.name));
+                companyNames = companyNames.filter((entry) => (Number(entry.confidence) || 0) > SIMILARITY_THRESHOLD);
+                companyNames = ensureThreeSlots(companyNames);
+                companyNames = deduplicateConfidences(companyNames);
+                const first = companyNames[0];
+                const detectedCompanyName = first && String(first.name || "").trim() ? first.name : null;
+                const confidence = first ? Number(first.confidence) || 0 : 0;
+                const needsInput = !detectedCompanyName;
+                return {
+                    fileName: fileLabel,
+                    detectedCompanyName,
+                    confidence,
+                    needsInput,
+                };
+            } catch (err) {
+                console.log(PARSE_FILE_LOG, "batchDetectCompanies FILE", { fileName: fileLabel, error: err.message });
+                return {
+                    fileName: fileLabel,
+                    detectedCompanyName: null,
+                    confidence: 0,
+                    needsInput: true,
+                };
+            }
+        };
+    });
+
+    const results = await runWithConcurrency(tasks, DETECT_COMPANIES_CONCURRENCY);
+    const outcomes = results.map((r, i) => {
+        if (r?.__error) {
+            const fileLabel = (files[i] && (files[i].originalname || files[i].name)) || "unknown";
+            return { fileName: fileLabel, detectedCompanyName: null, confidence: 0, needsInput: true };
+        }
+        return r;
+    });
+    const needsNamesFor = outcomes.filter((o) => o.needsInput).map((o) => ({ fileName: o.fileName }));
+
+    console.log(PARSE_FILE_LOG, "batchDetectCompanies OUTCOME", {
+        totalFiles: files.length,
+        detected: outcomes.filter((o) => !o.needsInput).length,
+        needsNamesFor: needsNamesFor.length,
+    });
+
+    return res.status(200).json({
+        success: true,
+        results: outcomes,
+        needsNamesFor,
+    });
+});
+
+/**
+ * Same as prepareOneFileUpload but uses a known company/supplier name (from detection or user).
+ * Skips getCompaniesFromFile and uses knownCompanyName for vendor resolution.
+ */
+async function prepareOneFileUploadWithKnownCompany(file, knownCompanyName, options = {}) {
+    const allowManualSupplierInput = Boolean(options.allowManualSupplierInput);
+    const fileName = getFileName(file);
+    const fileSize = file.buffer ? file.buffer.length : 0;
+    const startMs = Date.now();
+    const taskLog = [];
+    const pushTask = (name, taskStartMs) => {
+        taskLog.push({ task: name, elapsedSec: ((Date.now() - taskStartMs) / 1000).toFixed(2) + "s" });
+    };
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadWithKnownCompany CALL", { fileName, fileSize, knownCompanyName });
+
+    const companyName = String(knownCompanyName || "").trim();
+    if (!companyName) {
+        if (allowManualSupplierInput) {
+            const visionResult = await getInvoicesFromFileWithAIVision(file.buffer, fileName);
+            const storedFile = persistUploadedFile(file.buffer, fileName);
+            return buildNeedsSupplierInputResult({
+                fileName,
+                storedFile,
+                fileDate: visionResult?.fileDate ?? null,
+                invoices: visionResult?.invoices ?? [],
+                reason: "no_supplier_detected",
+                message: "We couldn't identify a supplier from this file. Enter the supplier name to continue.",
+                candidateSuppliers: [],
+                taskLog,
+            });
+        }
+        throw new Error("We couldn't identify a supplier in this file. Please check the file and try again.");
+    }
+
+    let taskStart = Date.now();
+    const visionResult = await getInvoicesFromFileWithAIVision(file.buffer, fileName);
+    pushTask("getInvoicesFromFileWithAIVision", taskStart);
+    const fileDate = visionResult?.fileDate ?? null;
+    const invoices = visionResult?.invoices ?? [];
+    taskStart = Date.now();
+    const storedFile = persistUploadedFile(file.buffer, fileName);
+    pushTask("persistUploadedFile", taskStart);
+
+    taskStart = Date.now();
+    const { matchesAbove08, preferredVendorId } = await selectBestVendor(companyName);
+    pushTask("selectBestVendor", taskStart);
+    const allowedContactIds = new Set((matchesAbove08 || []).map((m) => m.xeroId).filter(Boolean));
+    taskStart = Date.now();
+    const dbCloseMatches = await findCloseInvoiceMatchesInDb(invoices, {
+        threshold: 0.8,
+        contactIds: allowedContactIds.size > 0 ? [...allowedContactIds] : null,
+    });
+    pushTask("findCloseInvoiceMatchesInDb", taskStart);
+
+    const supplierMatchCounts = {};
+    for (const row of dbCloseMatches) {
+        const matchCount = row.matches.length;
+        if (matchCount === 0) continue;
+        const weight = 1 / matchCount;
+        for (const { dbInvoice } of row.matches) {
+            const id = dbInvoice.contactId ?? "unknown";
+            if (!allowedContactIds.size || allowedContactIds.has(id)) {
+                supplierMatchCounts[id] = (supplierMatchCounts[id] || 0) + weight;
+            }
+        }
+    }
+    const supplierMatchCountList = Object.entries(supplierMatchCounts)
+        .map(([contactId, count]) => ({ contactId, count: Math.round(count * 1000) / 1000 }))
+        .sort((a, b) => b.count - a.count);
+
+    if (supplierMatchCountList.length === 0 && matchesAbove08?.length > 1 && !preferredVendorId) {
+        const candidateSuppliers = buildCandidateSuppliers(matchesAbove08);
+        if (allowManualSupplierInput) {
+            return buildNeedsSupplierInputResult({
+                fileName,
+                storedFile,
+                fileDate,
+                invoices,
+                reason: "ambiguous_supplier",
+                message: "We couldn't confidently choose a supplier. Enter the supplier name to continue.",
+                candidateSuppliers,
+                taskLog,
+            });
+        }
+        throw new Error("Could not determine the best vendor. Please select the best vendor from the list.");
+    }
+
+    const selectedVendor = supplierMatchCountList[0]?.contactId ?? preferredVendorId ?? matchesAbove08?.[0]?.xeroId;
+    if (!selectedVendor) {
+        if (allowManualSupplierInput) {
+            return buildNeedsSupplierInputResult({
+                fileName,
+                storedFile,
+                fileDate,
+                invoices,
+                reason: "no_vendor_match",
+                message: "We couldn't match this file to a supplier. Enter the supplier name to continue.",
+                candidateSuppliers: buildCandidateSuppliers(matchesAbove08 || []),
+                taskLog,
+            });
+        }
+        throw new Error("We couldn't match this file to a supplier. Please add the supplier in Reconciliation first.");
+    }
+
+    taskStart = Date.now();
+    await Vendor.updateOne(
+        { xeroId: selectedVendor, supplier: { $ne: true } },
+        { $set: { supplier: true, modifiedLast: new Date() } }
+    );
+    const dateOnFile = parseInvoiceDate(fileDate);
+    const statement = await Statement.create({
+        contactId: selectedVendor,
+        file: storedFile,
+        isDeleted: false,
+        dateOnFile,
+    });
+    pushTask("createStatement", taskStart);
+
+    const outcome = {
+        vendorId: selectedVendor,
+        invoices,
+        statementId: statement._id,
+        taskLog,
+    };
+    console.log(PARSE_FILE_LOG, "prepareOneFileUploadWithKnownCompany OUTCOME", {
+        fileName,
+        success: true,
+        vendorId: selectedVendor,
+        statementId: statement._id,
+        invoiceCount: invoices.length,
+    });
+    return outcome;
+}
+
+/**
+ * POST /invoice/batch-invoice-file-upload-with-suppliers
+ * Expects multiple files + JSON body field supplierNamesByFile: { "fileName": "Company Name", ... }.
+ * Runs full upload flow for each file in parallel using the given company names; streams progress.
+ */
+exports.batchInvoiceFileUploadWithSuppliers = tryCatchAsync(async (req, res) => {
+    const files = req.files || [];
+    let supplierNamesByFile = {};
+    try {
+        const raw = req.body?.supplierNamesByFile;
+        if (raw) supplierNamesByFile = typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch (_) {
+        return res.status(400).json({ success: false, message: "Invalid supplierNamesByFile." });
+    }
+    if (files.length === 0) {
+        return res.status(400).json({ success: false, message: "Please add at least one file to upload." });
+    }
+    const wantsStream = req.get("Accept") === "text/event-stream" || req.query.stream === "1";
+    if (wantsStream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders();
+    }
+    console.log(PARSE_FILE_LOG, "batchInvoiceFileUploadWithSuppliers CALL", {
+        fileCount: files.length,
+        fileNames: files.map((f) => f.originalname || f.name),
+    });
+    const userId = req.user?._id;
+
+    const tasks = files.map((file) => {
+        const fileLabel = file.originalname || file.name;
+        const companyName = supplierNamesByFile[fileLabel] ?? supplierNamesByFile[file.name] ?? null;
+        return async () => {
+            console.log(PARSE_FILE_LOG, "batchInvoiceFileUploadWithSuppliers FILE", { fileName: fileLabel, totalFiles: files.length });
+            try {
+                const body = await prepareOneFileUploadWithKnownCompany(file, companyName, { allowManualSupplierInput: true });
+                if (body?.status === NEEDS_SUPPLIER_INPUT_STATUS) {
+                    return {
+                        fileLabel,
+                        success: false,
+                        errorEntry: {
+                            fileName: fileLabel,
+                            status: NEEDS_SUPPLIER_INPUT_STATUS,
+                            message: body.message,
+                            reason: body.reason,
+                            candidateSuppliers: body.candidateSuppliers,
+                            unresolvedUpload: body.unresolvedUpload,
+                        },
+                        createdIds: [],
+                    };
+                }
+                const result = await completeInvoiceFileUploadLogic(body, userId, { skipProcessLog: true });
+                const createdIds = [`s-${body.statementId}`, ...result.created.map((inv) => `i-${inv._id}`)];
+                console.log(PARSE_FILE_LOG, "batchInvoiceFileUploadWithSuppliers FILE OUTCOME", {
+                    fileName: fileLabel,
+                    success: true,
+                    statementId: body.statementId,
+                    createdCount: result.created.length,
+                });
+                return {
+                    fileLabel,
+                    success: true,
+                    result: {
+                        fileName: fileLabel,
+                        success: true,
+                        statementId: body.statementId,
+                        createdCount: result.created.length,
+                    },
+                    createdIds,
+                };
+            } catch (err) {
+                console.log(PARSE_FILE_LOG, "batchInvoiceFileUploadWithSuppliers FILE OUTCOME", { fileName: fileLabel, success: false, error: err.message });
+                return {
+                    fileLabel,
+                    success: false,
+                    errorEntry: {
+                        fileName: fileLabel,
+                        status: "error",
+                        error: "We couldn't process this file. Please check the format and try again.",
+                    },
+                    createdIds: [],
+                };
+            }
+        };
+    });
+
+    const outcomes = wantsStream
+        ? await runWithConcurrencyAndProgress(tasks, BATCH_UPLOAD_CONCURRENCY, (done, total, outcome) => {
+              try {
+                  const event = { done, total };
+                  if (outcome?.errorEntry?.status === NEEDS_SUPPLIER_INPUT_STATUS) {
+                      event.fileOutcome = outcome.errorEntry;
+                  }
+                  res.write(`data: ${JSON.stringify(event)}\n\n`);
+              } catch (_) {}
+          })
+        : await runWithConcurrency(tasks, BATCH_UPLOAD_CONCURRENCY);
+
+    const allIds = [];
+    const results = [];
+    const errors = [];
+    outcomes.forEach((outcome, i) => {
+        if (outcome?.__error) {
+            const fileLabel = (files[i] && (files[i].originalname || files[i].name)) || "unknown";
+            errors.push({
+                fileName: fileLabel,
+                status: "error",
+                error: "We couldn't process this file. Please check the format and try again.",
+            });
+            return;
+        }
+        if (outcome.success && outcome.result) {
+            results.push(outcome.result);
+            (outcome.createdIds || []).forEach((id) => allIds.push(id));
+        } else if (outcome.errorEntry) {
+            errors.push(outcome.errorEntry);
+        }
+    });
+
+    if (allIds.length > 0) {
+        const description = `Batch upload: ${results.length} statement(s) processed`;
+        try {
+            await logProcess(description, allIds, userId);
+        } catch (logErr) {
+            console.error("[batchInvoiceFileUploadWithSuppliers] process log failed:", logErr.message);
+        }
+    }
+    console.log(PARSE_FILE_LOG, "batchInvoiceFileUploadWithSuppliers OUTCOME", {
+        totalFiles: files.length,
+        processed: results.length,
+        failed: errors.length,
+    });
+
+    const payload = {
+        success: results.length > 0,
+        processed: results.length,
+        failed: errors.length,
+        results,
+        errors: errors.length ? errors : undefined,
+    };
+    if (wantsStream) {
+        res.write(`data: ${JSON.stringify({ result: payload })}\n\n`);
+        return res.end();
+    }
+    return res.status(200).json(payload);
+});
+
 /**
  * POST /invoice/batch-invoice-file-upload
- * Accepts multiple files; processes each and creates one activity log for the batch.
+ * Accepts multiple files; processes each in parallel (bounded concurrency) and creates one activity log for the batch.
  * ids in the log: s-<statementId> for each statement, i-<invoiceId> for each created invoice.
  */
 exports.batchInvoiceFileUpload = tryCatchAsync(async (req, res) => {
@@ -830,47 +1472,101 @@ exports.batchInvoiceFileUpload = tryCatchAsync(async (req, res) => {
     if (files.length === 0) {
         return res.status(400).json({ success: false, message: "Please add at least one file to upload." });
     }
+    const wantsStream = req.get("Accept") === "text/event-stream" || req.query.stream === "1";
+    if (wantsStream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders();
+    }
     console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload CALL", { fileCount: files.length, fileNames: files.map((f) => f.originalname || f.name) });
     const userId = req.user?._id;
+
+    const tasks = files.map((file) => {
+        const fileLabel = file.originalname || file.name;
+        return async () => {
+            console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE", { fileName: fileLabel, totalFiles: files.length });
+            try {
+                const body = await prepareOneFileUpload(file, { allowManualSupplierInput: true });
+                if (body?.status === NEEDS_SUPPLIER_INPUT_STATUS) {
+                    return {
+                        fileLabel,
+                        success: false,
+                        errorEntry: {
+                            fileName: fileLabel,
+                            status: NEEDS_SUPPLIER_INPUT_STATUS,
+                            message: body.message,
+                            reason: body.reason,
+                            candidateSuppliers: body.candidateSuppliers,
+                            unresolvedUpload: body.unresolvedUpload,
+                        },
+                        createdIds: [],
+                    };
+                }
+                const result = await completeInvoiceFileUploadLogic(body, userId, { skipProcessLog: true });
+                const createdIds = [`s-${body.statementId}`, ...result.created.map((inv) => `i-${inv._id}`)];
+                console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE OUTCOME", { fileName: fileLabel, success: true, statementId: body.statementId, createdCount: result.created.length, currencyOfFile: [...new Set((body.invoices || []).map((inv) => inv.currency).filter(Boolean))] });
+                return {
+                    fileLabel,
+                    success: true,
+                    result: {
+                        fileName: fileLabel,
+                        success: true,
+                        statementId: body.statementId,
+                        createdCount: result.created.length,
+                    },
+                    createdIds,
+                };
+            } catch (err) {
+                console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE OUTCOME", { fileName: fileLabel, success: false, error: err.message });
+                return {
+                    fileLabel,
+                    success: false,
+                    errorEntry: {
+                        fileName: fileLabel,
+                        status: "error",
+                        error: "We couldn't process this file. Please check the format and try again.",
+                    },
+                    createdIds: [],
+                };
+            }
+        };
+    });
+
+    const outcomes = wantsStream
+        ? await runWithConcurrencyAndProgress(tasks, BATCH_UPLOAD_CONCURRENCY, (done, total, outcome) => {
+              try {
+                  const event = { done, total };
+                  if (outcome?.errorEntry?.status === NEEDS_SUPPLIER_INPUT_STATUS) {
+                      event.fileOutcome = outcome.errorEntry;
+                  }
+                  res.write(`data: ${JSON.stringify(event)}\n\n`);
+              } catch (_) {}
+          })
+        : await runWithConcurrency(tasks, BATCH_UPLOAD_CONCURRENCY);
+
     const allIds = [];
     const results = [];
     const errors = [];
-    for (const file of files) {
-        const fileLabel = file.originalname || file.name;
-        console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE", { fileName: fileLabel, fileIndex: results.length + errors.length + 1, totalFiles: files.length });
-        try {
-            const body = await prepareOneFileUpload(file, { allowManualSupplierInput: true });
-            if (body?.status === NEEDS_SUPPLIER_INPUT_STATUS) {
-                errors.push({
-                    fileName: fileLabel,
-                    status: NEEDS_SUPPLIER_INPUT_STATUS,
-                    message: body.message,
-                    reason: body.reason,
-                    candidateSuppliers: body.candidateSuppliers,
-                    unresolvedUpload: body.unresolvedUpload,
-                });
-                continue;
-            }
-            const result = await completeInvoiceFileUploadLogic(body, userId, { skipProcessLog: true });
-            allIds.push(`s-${body.statementId}`);
-            result.created.forEach((inv) => allIds.push(`i-${inv._id}`));
-            const resultEntry = {
-                fileName: fileLabel,
-                success: true,
-                statementId: body.statementId,
-                createdCount: result.created.length,
-            };
-            results.push(resultEntry);
-            console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE OUTCOME", { fileName: fileLabel, success: true, statementId: body.statementId, createdCount: result.created.length, currencyOfFile: [...new Set((body.invoices || []).map((inv) => inv.currency).filter(Boolean))] });
-        } catch (err) {
-            console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE OUTCOME", { fileName: fileLabel, success: false, error: err.message });
+    outcomes.forEach((outcome, i) => {
+        if (outcome?.__error) {
+            const fileLabel = (files[i] && (files[i].originalname || files[i].name)) || "unknown";
+            console.log(PARSE_FILE_LOG, "batchInvoiceFileUpload FILE OUTCOME", { fileName: fileLabel, success: false, error: outcome.__error.message });
             errors.push({
                 fileName: fileLabel,
                 status: "error",
                 error: "We couldn't process this file. Please check the format and try again.",
             });
+            return;
         }
-    }
+        if (outcome.success && outcome.result) {
+            results.push(outcome.result);
+            (outcome.createdIds || []).forEach((id) => allIds.push(id));
+        } else if (outcome.errorEntry) {
+            errors.push(outcome.errorEntry);
+        }
+    });
+
     if (allIds.length > 0) {
         const description = `Batch upload: ${results.length} statement(s) processed`;
         try {
@@ -886,13 +1582,19 @@ exports.batchInvoiceFileUpload = tryCatchAsync(async (req, res) => {
         results: results.map((r) => ({ fileName: r.fileName, statementId: r.statementId, createdCount: r.createdCount })),
         errors: errors.length ? errors.map((e) => ({ fileName: e.fileName, error: e.error })) : undefined,
     });
-    return res.status(200).json({
+
+    const payload = {
         success: results.length > 0,
         processed: results.length,
         failed: errors.length,
         results,
         errors: errors.length ? errors : undefined,
-    });
+    };
+    if (wantsStream) {
+        res.write(`data: ${JSON.stringify({ result: payload })}\n\n`);
+        return res.end();
+    }
+    return res.status(200).json(payload);
 });
 
 /**
@@ -902,6 +1604,7 @@ exports.batchInvoiceFileUpload = tryCatchAsync(async (req, res) => {
 exports.processOneStatementFile = async function processOneStatementFile(fileBuffer, uniqueFileName, user) {
     const fileName = uniqueFileName;
     const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    const startMs = Date.now();
     console.log(PARSE_FILE_LOG, "processOneStatementFile CALL", { fileName, fileSize });
     try {
         const { companyNames: rawCompanyNames } = await getCompaniesFromFile(fileBuffer, fileName);
@@ -912,11 +1615,15 @@ exports.processOneStatementFile = async function processOneStatementFile(fileBuf
 
         const first = companyNames[0];
         if (!first || !String(first.name || "").trim()) {
+            const elapsedMs = Date.now() - startMs;
+            console.log(PARSE_FILE_LOG, "processOneStatementFile ELAPSED (no company)", { fileName, elapsedMs });
             return { success: false, error: "No company name identified above 0.8." };
         }
 
         const { matchesAbove08, preferredVendorId } = await selectBestVendor(first.name);
         const { fileDate, invoices: invoicesFromAIVision } = await getInvoicesFromFileWithAIVision(fileBuffer, fileName);
+        const afterAIVisionMs = Date.now();
+        console.log(PARSE_FILE_LOG, "processOneStatementFile getInvoicesFromFileWithAIVision elapsedMs", { fileName, elapsedMs: afterAIVisionMs - startMs });
         const invoices = invoicesFromAIVision ?? [];
 
         const allowedContactIds = new Set((matchesAbove08 || []).map((m) => m.xeroId).filter(Boolean));
@@ -979,10 +1686,14 @@ exports.processOneStatementFile = async function processOneStatementFile(fileBuf
             createdCount: result.createdCount,
             matchCount: result.matchCount,
         });
+        const elapsedMs = Date.now() - startMs;
+        console.log(PARSE_FILE_LOG, "processOneStatementFile ELAPSED", { fileName, elapsedMs });
         return outcome;
     } catch (err) {
         console.log(PARSE_FILE_LOG, "processOneStatementFile OUTCOME", { fileName, success: false, error: err.message || String(err) });
         console.error("[processOneStatementFile]", err);
+        const elapsedMs = Date.now() - startMs;
+        console.log(PARSE_FILE_LOG, "processOneStatementFile ELAPSED (error)", { fileName, elapsedMs });
         return { success: false, error: err.message || String(err) };
     }
 };

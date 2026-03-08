@@ -77,6 +77,14 @@ export default function UserErrors() {
   }, [page]);
 
   useEffect(() => {
+    try {
+      sessionStorage.setItem("simpleApp.cameFromErrors", "1");
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
     loadReports();
   }, [loadReports]);
 
@@ -134,11 +142,11 @@ export default function UserErrors() {
     }
   }
 
-  async function handleDelete(report) {
+  async function handleArchive(report) {
     if (!canManageReport(report)) return;
     if (!report?.id || deletingId) return;
-    const confirmDelete = window.confirm("Delete this report?");
-    if (!confirmDelete) return;
+    const confirmArchive = window.confirm("Archive this report?");
+    if (!confirmArchive) return;
     setDeletingId(report.id);
     setError("");
     setSuccessMessage("");
@@ -149,13 +157,13 @@ export default function UserErrors() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.status !== "success") {
-        throw new Error(data.message || "Failed to delete report.");
+        throw new Error(data.message || "Failed to archive report.");
       }
       setReports((prev) => prev.filter((item) => item.id !== report.id));
       if (editing?.id === report.id) setEditing(null);
-      setSuccessMessage("Report deleted.");
+      setSuccessMessage("Report archived.");
     } catch (err) {
-      setError(err.message || "Failed to delete report.");
+      setError(err.message || "Failed to archive report.");
     } finally {
       setDeletingId(null);
     }
@@ -408,10 +416,10 @@ export default function UserErrors() {
                 <button
                   type="button"
                   className={styles.dangerBtn}
-                  onClick={() => handleDelete(report)}
+                  onClick={() => handleArchive(report)}
                   disabled={!canManageReport(report) || deletingId === report.id || savingId === report.id}
                 >
-                  {deletingId === report.id ? "Deleting..." : "Delete"}
+                  {deletingId === report.id ? "Archiving..." : "Archive"}
                 </button>
                 {report.status === "fixed" && canManageReport(report) && (
                   <button

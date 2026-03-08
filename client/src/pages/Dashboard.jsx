@@ -20,8 +20,12 @@ export default function Dashboard() {
     const [uploadLoading, setUploadLoading] = useState(false);
     const [uploadSuccess, setUploadSuccess] = useState("");
     const [uploadError, setUploadError] = useState("");
+    const [uploadProgress, setUploadProgress] = useState(null);
+    const [uploadPhase, setUploadPhase] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
     const [exportUnmatchedLoading, setExportUnmatchedLoading] = useState(false);
+    const [pendingUpload, setPendingUpload] = useState(null);
+    const [supplierNamesForMissing, setSupplierNamesForMissing] = useState({});
 
     const fetchStats = useCallback(async () => {
         try {
@@ -60,6 +64,89 @@ export default function Dashboard() {
         e.target.value = "";
     }
 
+    function applyUploadResult(data) {
+        const results = data?.results || [];
+        const errs = data?.errors || [];
+        if (results.length > 0) {
+            const totalCreated = results.reduce((s, x) => s + (x.createdCount ?? 0), 0);
+            let msg = `${results.length} file(s) processed.`;
+            if (totalCreated > 0) msg += ` ${totalCreated} invoice(s) saved.`;
+            if (errs.length > 0) msg += ` ${errs.length} failed.`;
+            setUploadSuccess(msg);
+            fetchStats();
+        }
+        if (errs.length > 0 && results.length === 0) {
+            setUploadError(
+                errs.length === 1 ? errs[0].error : errs.map((e) => `${e.fileName}: ${e.error}`).join("; ")
+            );
+        }
+    }
+
+    async function runUploadWithSuppliers(fileArray, supplierNamesByFile) {
+        setUploadPhase("uploading");
+        setUploadError("");
+        setUploadSuccess("");
+        const formData = new FormData();
+        fileArray.forEach((file) => formData.append("files", file));
+        formData.append("supplierNamesByFile", JSON.stringify(supplierNamesByFile));
+        const response = await fetch("/api/v2/invoice/batch-invoice-file-upload-with-suppliers?stream=1", {
+            method: "POST",
+            body: formData,
+            credentials: "include",
+            headers: { Accept: "text/event-stream" },
+        });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            setUploadError(data.message || "Upload didn't complete. Please try again.");
+            setUploadPhase(null);
+            setPendingUpload(null);
+            setSupplierNamesForMissing({});
+            setUploadLoading(false);
+            return;
+        }
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("text/event-stream")) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let resultApplied = false;
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const chunks = buffer.split("\n\n");
+                buffer = chunks.pop() || "";
+                for (const chunk of chunks) {
+                    if (chunk.startsWith("data: ")) {
+                        try {
+                            const event = JSON.parse(chunk.slice(6));
+                            if (event.done != null && event.total != null) {
+                                setUploadProgress({ done: event.done, total: event.total });
+                            } else if (event.result && !resultApplied) {
+                                resultApplied = true;
+                                applyUploadResult(event.result);
+                            }
+                        } catch (_) {}
+                    }
+                }
+            }
+            if (buffer.startsWith("data: ") && !resultApplied) {
+                try {
+                    const event = JSON.parse(buffer.slice(6));
+                    if (event.result) applyUploadResult(event.result);
+                } catch (_) {}
+            }
+        } else {
+            const data = await response.json();
+            applyUploadResult(data);
+        }
+        setUploadProgress(null);
+        setUploadPhase(null);
+        setPendingUpload(null);
+        setSupplierNamesForMissing({});
+        setUploadLoading(false);
+    }
+
     async function handleFileUpload(files) {
         if (!files?.length) return;
         const fileArray = Array.from(files);
@@ -74,74 +161,65 @@ export default function Dashboard() {
         setUploadLoading(true);
         setUploadError("");
         setUploadSuccess("");
-        const successes = [];
-        const errors = [];
+        setUploadPhase("detecting");
+        setUploadProgress(null);
         try {
-            if (fileArray.length > 1) {
-                // Batch upload: one request, one activity log for all
-                const formData = new FormData();
-                fileArray.forEach((file) => formData.append("files", file));
-                const response = await fetch("/api/v2/invoice/batch-invoice-file-upload", {
-                    method: "POST",
-                    body: formData,
-                    credentials: "include",
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    setUploadError(data.message || "Upload didn't complete. Please try again.");
-                    return;
-                }
-                (data.results || []).forEach((r) =>
-                    successes.push({ fileName: r.fileName, createdCount: r.createdCount ?? 0 })
-                );
-                (data.errors || []).forEach((e) => errors.push({ fileName: e.fileName, error: e.error }));
-                if (successes.length > 0) {
-                    const totalCreated = successes.reduce((s, x) => s + x.createdCount, 0);
-                    let msg = `${successes.length} file(s) processed.`;
-                    if (totalCreated > 0) msg += ` ${totalCreated} invoice(s) saved.`;
-                    if (errors.length > 0) msg += ` ${errors.length} failed.`;
-                    setUploadSuccess(msg);
-                    fetchStats();
-                }
-                if (errors.length > 0 && successes.length === 0) {
-                    setUploadError(
-                        errors.length === 1 ? errors[0].error : errors.map((e) => `${e.fileName}: ${e.error}`).join("; ")
-                    );
-                }
-            } else {
-                const file = fileArray[0];
-                const formData = new FormData();
-                formData.append("file", file);
-                const response = await fetch("/api/v2/invoice/invoice-file-upload", {
-                    method: "POST",
-                    body: formData,
-                    credentials: "include",
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    errors.push({ fileName: file.name, error: data.message || "We couldn't read that file. Please try again." });
-                } else if (data.success) {
-                    const createdCount = data.createdCount ?? (data.created?.length ?? 0);
-                    successes.push({ fileName: file.name, createdCount });
-                } else {
-                    errors.push({ fileName: file.name, error: data.message || "We couldn't process that file. Please try again." });
-                }
-                if (successes.length > 0) {
-                    const totalCreated = successes.reduce((s, x) => s + x.createdCount, 0);
-                    let msg = `"${successes[0].fileName}" processed.`;
-                    if (totalCreated > 0) msg += ` ${totalCreated} invoice(s) saved.`;
-                    setUploadSuccess(msg);
-                    fetchStats();
-                }
-                if (errors.length > 0 && successes.length === 0) {
-                    setUploadError(errors[0].error);
-                }
+            const formData = new FormData();
+            fileArray.forEach((file) => formData.append("files", file));
+            const response = await fetch("/api/v2/invoice/batch-detect-companies", {
+                method: "POST",
+                body: formData,
+                credentials: "include",
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                setUploadError(data.message || "Detection failed. Please try again.");
+                setUploadPhase(null);
+                return;
             }
+            const results = data.results || [];
+            const needsNamesFor = data.needsNamesFor || [];
+            const supplierNamesByFile = {};
+            results.forEach((r) => {
+                if (r.detectedCompanyName) supplierNamesByFile[r.fileName] = r.detectedCompanyName;
+            });
+            if (needsNamesFor.length > 0) {
+                setPendingUpload({ fileArray, supplierNamesByFile, needsNamesFor });
+                setUploadPhase("needsNames");
+                setUploadLoading(false);
+                return;
+            }
+            await runUploadWithSuppliers(fileArray, supplierNamesByFile);
         } catch {
-            setUploadError("Upload didn't complete. Please check your connection and try again.");
+            setUploadError("Detection didn't complete. Please check your connection and try again.");
+            setUploadPhase(null);
         } finally {
             setUploadLoading(false);
         }
+    }
+
+    function handleSubmitSupplierNames() {
+        const { fileArray, supplierNamesByFile, needsNamesFor } = pendingUpload || {};
+        if (!fileArray?.length || !supplierNamesByFile) return;
+        const missing = needsNamesFor || [];
+        const filled = missing.every(({ fileName }) => supplierNamesForMissing[fileName]?.trim());
+        if (!filled) {
+            setUploadError("Please enter a supplier name for each file listed.");
+            return;
+        }
+        const combined = { ...supplierNamesByFile };
+        missing.forEach(({ fileName }) => {
+            combined[fileName] = (supplierNamesForMissing[fileName] || "").trim();
+        });
+        setUploadLoading(true);
+        runUploadWithSuppliers(fileArray, combined);
+    }
+
+    function cancelPendingUpload() {
+        setPendingUpload(null);
+        setUploadPhase(null);
+        setSupplierNamesForMissing({});
+        setUploadError("");
     }
 
     function handleDragOver(e) {
@@ -374,10 +452,22 @@ export default function Dashboard() {
                         onDragLeave={handleDragLeave}
                         onDrop={handleDrop}
                     >
-                        {uploadLoading ? (
+                        {uploadLoading || uploadPhase === "needsNames" ? (
                             <div className={pageStyle.uploadLoader}>
-                                <div className={pageStyle.spinner}></div>
-                                <p>Uploading and processing file...</p>
+                                {uploadPhase === "needsNames" ? (
+                                    <p>Enter supplier names for the files we couldn’t detect.</p>
+                                ) : (
+                                    <>
+                                        <div className={pageStyle.spinner}></div>
+                                        <p>
+                                            {uploadPhase === "detecting"
+                                                ? "Detecting companies…"
+                                                : uploadProgress?.total != null && uploadProgress.total > 0
+                                                ? `Processing ${uploadProgress.done ?? 0} of ${uploadProgress.total} files…`
+                                                : "Processing files…"}
+                                        </p>
+                                    </>
+                                )}
                             </div>
                         ) : (
                             <>
@@ -415,6 +505,67 @@ export default function Dashboard() {
                             </>
                         )}
                     </div>
+                    {uploadPhase === "needsNames" && pendingUpload?.needsNamesFor?.length > 0 && (
+                        <div style={{ marginTop: "1.2rem", padding: "1.2rem", background: "#f8fafc", borderRadius: "0.8rem", border: "1px solid #e2e8f0" }}>
+                            <p style={{ fontSize: "1.4rem", fontWeight: 500, color: "#334155", marginBottom: "1rem" }}>
+                                We couldn’t detect a company name for these files. Enter the supplier name for each:
+                            </p>
+                            {pendingUpload.needsNamesFor.map(({ fileName }) => (
+                                <div key={fileName} style={{ marginBottom: "0.8rem" }}>
+                                    <label style={{ display: "block", fontSize: "1.2rem", color: "#64748b", marginBottom: "0.4rem" }}>
+                                        {fileName}
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={supplierNamesForMissing[fileName] ?? ""}
+                                        onChange={(e) => setSupplierNamesForMissing((prev) => ({ ...prev, [fileName]: e.target.value }))}
+                                        placeholder="Supplier name"
+                                        style={{
+                                            width: "100%",
+                                            maxWidth: "28rem",
+                                            padding: "0.6rem 0.8rem",
+                                            fontSize: "1.3rem",
+                                            border: "1px solid #cbd5e1",
+                                            borderRadius: "0.4rem",
+                                        }}
+                                    />
+                                </div>
+                            ))}
+                            <div style={{ display: "flex", gap: "0.8rem", marginTop: "1rem" }}>
+                                <button
+                                    type="button"
+                                    onClick={handleSubmitSupplierNames}
+                                    style={{
+                                        padding: "0.6rem 1.2rem",
+                                        fontSize: "1.3rem",
+                                        fontWeight: 500,
+                                        color: "#fff",
+                                        background: "#2563eb",
+                                        border: "none",
+                                        borderRadius: "0.4rem",
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    Continue upload
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={cancelPendingUpload}
+                                    style={{
+                                        padding: "0.6rem 1.2rem",
+                                        fontSize: "1.3rem",
+                                        color: "#64748b",
+                                        background: "transparent",
+                                        border: "1px solid #cbd5e1",
+                                        borderRadius: "0.4rem",
+                                        cursor: "pointer",
+                                    }}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
                     {uploadSuccess && (
                         <div className={pageStyle.successMessage} style={{ marginTop: "1rem" }}>
                             {uploadSuccess}

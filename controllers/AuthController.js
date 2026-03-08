@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const { AuthorizationCode } = require('simple-oauth2');
 const { tryCatchAsync } = require('./ErrorController');
 const axios = require("axios");
@@ -97,17 +98,30 @@ exports.xeroClient = tryCatchAsync(async (req, res, next) => {
 })
 
 exports.registerXero = tryCatchAsync(async (req, res) => {
+    const state = crypto.randomBytes(32).toString('hex');
+    res.cookie('xero_oauth_state', state, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 10 * 60 * 1000, // 10 minutes
+    });
     const client = req.xeroClient;
     const authorizationUri = client.authorizeURL({
         redirect_uri: req.xeroRedirectUri,
         scope: req.xeroScopes,
-        state: 'random-string-123',
+        state,
     });
 
     res.redirect(authorizationUri);
 })
 
 exports.registerXeroCallback = tryCatchAsync(async (req, res) => {
+    const state = req.query.state;
+    const savedState = req.cookies?.xero_oauth_state;
+    res.clearCookie('xero_oauth_state', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' });
+    if (!state || !savedState || state !== savedState) {
+        return res.status(403).json({ status: 'error', message: 'Invalid or expired OAuth state' });
+    }
     const code = req.query.code;
     const client = req.xeroClient;
     const tokenParams = {
@@ -302,7 +316,7 @@ exports.createUser = tryCatchAsync(async (req, res) => {
             })
             .json({
                 status: "success",
-                user: newUser
+                user: { id: newUser._id, name: newUser.name, email: newUser.email }
             });
     } catch (err) {
         console.error("Error creating user:", err);
@@ -377,7 +391,7 @@ exports.login = tryCatchAsync(async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findOne({ email: normalizedEmail }).select('+password');
 
     // SECURITY: Don't reveal if user exists or not (prevents user enumeration)
     // Use generic error message for both cases
@@ -394,7 +408,7 @@ exports.login = tryCatchAsync(async (req, res) => {
         { expiresIn: "7d" }
     );
 
-    res.status(201)
+    res.status(200)
         .cookie("token", token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',

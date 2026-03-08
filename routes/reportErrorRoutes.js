@@ -250,7 +250,7 @@ router.get(
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
     const skip = (page - 1) * limit;
-    const query = buildReportAccessQuery(userId, tenantId);
+    const query = { ...buildReportAccessQuery(userId, tenantId), archived: { $ne: true } };
 
     const [items, total] = await Promise.all([
       UserErrorReport.find(query)
@@ -363,7 +363,7 @@ router.patch(
 
 /**
  * DELETE /api/v1/report-error/db/:reportId
- * Delete current authenticated user's DB report.
+ * Soft-delete (archive) current authenticated user's DB report.
  */
 router.delete(
   "/report-error/db/:reportId",
@@ -385,11 +385,12 @@ router.delete(
       });
     }
     const accessQuery = buildReportAccessQuery(userId, tenantId);
-    const deleted = await UserErrorReport.findOneAndDelete({
-      _id: reportId,
-      ...accessQuery,
-    }).lean();
-    if (!deleted) {
+    const updated = await UserErrorReport.findOneAndUpdate(
+      { _id: reportId, ...accessQuery },
+      { archived: true, archivedAt: new Date(), updatedAt: new Date() },
+      { new: true }
+    ).lean();
+    if (!updated) {
       return res.status(404).json({
         status: "fail",
         message: "Report not found.",
@@ -397,7 +398,7 @@ router.delete(
     }
     return res.status(200).json({
       status: "success",
-      message: "Report deleted.",
+      message: "Report archived.",
     });
   })
 );

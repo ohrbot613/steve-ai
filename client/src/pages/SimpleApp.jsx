@@ -670,6 +670,8 @@ function splitFileName(fileName) {
 
 const DASHBOARD_TABS = ["latest", "attention", "reconciled", "statements"];
 const ACTIVE_TAB_STORAGE_KEY = "simpleApp.activeTab";
+const TAB_TWO = "attention"; // second tab
+const CAME_FROM_ERRORS_KEY = "simpleApp.cameFromErrors";
 
 export default function SimpleApp() {
   const { data: dashboardData, loading: lastUploadLoading, refetch: refetchDashboardData, updateData: updateDashboardData } =
@@ -680,11 +682,15 @@ export default function SimpleApp() {
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [uploadProgress, setUploadProgress] = useState(null);
   const [manualSupplierQueue, setManualSupplierQueue] = useState([]);
   const [manualSupplierInput, setManualSupplierInput] = useState("");
   const [manualSupplierSubmitting, setManualSupplierSubmitting] = useState(false);
   const [manualSupplierError, setManualSupplierError] = useState("");
   const [manualSupplierVisible, setManualSupplierVisible] = useState(false);
+  const [batchSessionMergeMode, setBatchSessionMergeMode] = useState(false);
+  const [batchSessionSupplierSummary, setBatchSessionSupplierSummary] = useState(null);
+  const queueUnresolvedRef = useRef(false);
   const [predefinedNamesVisible, setPredefinedNamesVisible] = useState(false);
   const [predefinedNamesFiles, setPredefinedNamesFiles] = useState([]);
   const [predefinedNamesError, setPredefinedNamesError] = useState("");
@@ -779,7 +785,11 @@ export default function SimpleApp() {
   };
 
   const tabSort = sortByTab[activeTab];
-  const tableDataForTab = getTableDataForTab(activeTab, dashboardData, tab2Data, tab3Data);
+  const dashboardDataForLatest =
+    activeTab === "latest" && Array.isArray(batchSessionSupplierSummary) && batchSessionSupplierSummary.length > 0
+      ? { ...dashboardData, supplierSummary: batchSessionSupplierSummary }
+      : dashboardData;
+  const tableDataForTab = getTableDataForTab(activeTab, dashboardDataForLatest, tab2Data, tab3Data);
   const tableDataForDisplay = tableDataForTab;
   const sortedTableData = sortTableRows(
     tableDataForDisplay,
@@ -840,6 +850,21 @@ export default function SimpleApp() {
       // Ignore storage failures (private mode, blocked storage, etc.)
     }
   }, [activeTab]);
+
+  // When navigating back from the error page or on refresh, make tab two (attention) active
+  useEffect(() => {
+    try {
+      const nav = performance.getEntriesByType?.("navigation")?.[0];
+      const isReload = nav?.type === "reload";
+      const cameFromErrors = sessionStorage.getItem(CAME_FROM_ERRORS_KEY);
+      if (isReload || cameFromErrors) {
+        setActiveTab(TAB_TWO);
+        sessionStorage.removeItem(CAME_FROM_ERRORS_KEY);
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
 
   const refetchStatementsList = useCallback(async () => {
     setStatementsLoading(true);
@@ -1298,6 +1323,13 @@ export default function SimpleApp() {
     );
   }, [uploadLoading]);
 
+  useEffect(() => {
+    if (batchSessionMergeMode && manualSupplierQueue.length > 0 && Array.isArray(dashboardData?.supplierSummary)) {
+      setBatchSessionSupplierSummary([...dashboardData.supplierSummary]);
+      setBatchSessionMergeMode(false);
+    }
+  }, [batchSessionMergeMode, manualSupplierQueue.length, dashboardData?.supplierSummary]);
+
   const lastUploadDateTime =
     dashboardData?.log?.createdAt != null
       ? formatLogDateTime(dashboardData.log.createdAt)
@@ -1327,10 +1359,14 @@ export default function SimpleApp() {
     (sum, row) => sum + (row.issues ?? 0),
     0
   );
-  const attentionInvoiceCount = attentionTableData.reduce(
-    (sum, row) => sum + (row.pairs?.length ?? 0) * 2 + (row.unpairedInvoices?.length ?? 0),
-    0
-  );
+  const attentionInvoiceCount = attentionTableData.reduce((sum, row) => {
+    const pairCount = row.pairs?.length ?? 0;
+    const unpairedNotUnverified = (row.unpairedInvoices ?? []).filter((u) => {
+      const issue = getTab2UnpairedIssue(u);
+      return issue !== "POST" && issue !== "UNVERIFIED";
+    }).length;
+    return sum + pairCount + unpairedNotUnverified;
+  }, 0);
   const reconciledTableData = getTableDataForTab("reconciled", dashboardData, tab2Data, tab3Data);
   const reconciledInvoiceCount = reconciledTableData.reduce(
     (sum, row) => sum + (row.pairs?.length ?? 0) * 2,
@@ -1360,15 +1396,15 @@ export default function SimpleApp() {
             fileCurrency: fileInv.currency ?? "GBP",
             xeroAmount: xeroInv.amount != null ? Number(xeroInv.amount) : "",
             xeroCurrency: xeroInv.currency ?? "GBP",
-            dueDate: (xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)
-              ? new Date((xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)).toLocaleDateString("en-GB")
+            dueDate: (xeroInv.date || fileInv.date)
+              ? new Date((xeroInv.date || fileInv.date)).toLocaleDateString("en-GB")
               : "",
           });
         }
         for (const u of s.unpairedInvoices || []) {
           const amtOrig = u.amount != null ? Number(u.amount) : "";
           const curr = u.currency ?? "GBP";
-          const dueOrDate = u.dueDate || u.date;
+          const dateOrDue = u.date;
           rows.push({
             supplier,
             issue: getTab2UnpairedIssue(u),
@@ -1377,7 +1413,7 @@ export default function SimpleApp() {
             fileCurrency: u.fromXero ? "" : curr,
             xeroAmount: u.fromXero ? amtOrig : "",
             xeroCurrency: u.fromXero ? curr : "",
-            dueDate: dueOrDate ? new Date(dueOrDate).toLocaleDateString("en-GB") : "",
+            dueDate: dateOrDue ? new Date(dateOrDue).toLocaleDateString("en-GB") : "",
           });
         }
       }
@@ -1393,7 +1429,7 @@ export default function SimpleApp() {
         { label: "File Currency", key: "fileCurrency" },
         { label: "Xero Amount", key: "xeroAmount" },
         { label: "Xero Currency", key: "xeroCurrency" },
-        { label: "Due Date", key: "dueDate" },
+        { label: "Invoice Date", key: "dueDate" },
       ];
       await exportToExcel(rows, headers, `tab2-issues-${new Date().toISOString().slice(0, 10)}`);
     } catch (err) {
@@ -1419,15 +1455,15 @@ export default function SimpleApp() {
         fileCurrency: fileInv.currency ?? "GBP",
         xeroAmount: xeroInv.amount != null ? Number(xeroInv.amount) : "",
         xeroCurrency: xeroInv.currency ?? "GBP",
-        dueDate: (xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)
-          ? new Date((xeroInv.dueDate || xeroInv.date) || (fileInv.dueDate || fileInv.date)).toLocaleDateString("en-GB")
+        dueDate: (xeroInv.date || fileInv.date)
+          ? new Date((xeroInv.date || fileInv.date)).toLocaleDateString("en-GB")
           : "",
       });
     }
     for (const u of row.unpairedInvoices || []) {
       const amtOrig = u.amount != null ? Number(u.amount) : "";
       const curr = u.currency ?? "GBP";
-      const dueOrDate = u.dueDate || u.date;
+      const dateOrDue = u.date;
       rows.push({
         supplier,
         issue: getTab2UnpairedIssue(u),
@@ -1436,7 +1472,7 @@ export default function SimpleApp() {
         fileCurrency: u.fromXero ? "" : curr,
         xeroAmount: u.fromXero ? amtOrig : "",
         xeroCurrency: u.fromXero ? curr : "",
-        dueDate: dueOrDate ? new Date(dueOrDate).toLocaleDateString("en-GB") : "",
+        dueDate: dateOrDue ? new Date(dateOrDue).toLocaleDateString("en-GB") : "",
       });
     }
     if (rows.length === 0) {
@@ -1454,7 +1490,7 @@ export default function SimpleApp() {
         { label: "File Currency", key: "fileCurrency" },
         { label: "Xero Amount", key: "xeroAmount" },
         { label: "Xero Currency", key: "xeroCurrency" },
-        { label: "Due Date", key: "dueDate" },
+        { label: "Invoice Date", key: "dueDate" },
       ];
       const slug = String(supplier).replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 40);
       await exportToExcel(rows, headers, `tab2-issues-${slug}-${new Date().toISOString().slice(0, 10)}`);
@@ -1490,8 +1526,8 @@ export default function SimpleApp() {
             currency,
             generatedAmountGBP,
             generatedCurrency: "GBP",
-            dueDate: (fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)
-              ? new Date((fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)).toLocaleDateString("en-GB")
+            dueDate: (fileInv.date || xeroInv.date)
+              ? new Date((fileInv.date || xeroInv.date)).toLocaleDateString("en-GB")
               : "",
           });
         }
@@ -1507,7 +1543,7 @@ export default function SimpleApp() {
         { label: "Currency", key: "currency" },
         { label: "Exchange Amount (£)", key: "generatedAmountGBP" },
         { label: "Exchange Currency", key: "generatedCurrency" },
-        { label: "Due Date", key: "dueDate" },
+        { label: "Invoice Date", key: "dueDate" },
       ];
       await exportToExcel(rows, headers, `tab3-reconciled-${new Date().toISOString().slice(0, 10)}`);
     } catch (err) {
@@ -1542,8 +1578,8 @@ export default function SimpleApp() {
           currency,
           generatedAmountGBP,
           generatedCurrency: "GBP",
-          dueDate: (fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)
-            ? new Date((fileInv.dueDate || fileInv.date) || (xeroInv.dueDate || xeroInv.date)).toLocaleDateString("en-GB")
+          dueDate: (fileInv.date || xeroInv.date)
+            ? new Date((fileInv.date || xeroInv.date)).toLocaleDateString("en-GB")
             : "",
         });
       }
@@ -1554,7 +1590,7 @@ export default function SimpleApp() {
         { label: "Currency", key: "currency" },
         { label: "Generated Amount (£)", key: "generatedAmountGBP" },
         { label: "Exchange Currency", key: "generatedCurrency" },
-        { label: "Due Date", key: "dueDate" },
+        { label: "Invoice Date", key: "dueDate" },
       ];
       const slug = String(supplier).replace(/[^a-zA-Z0-9-_]/g, "-").slice(0, 40);
       await exportToExcel(rows, headers, `tab3-reconciled-${slug}-${new Date().toISOString().slice(0, 10)}`);
@@ -1575,14 +1611,17 @@ export default function SimpleApp() {
     uploadPickerModeRef.current = "standard";
 
     if (files?.length > 0) {
-      if (selectedMode === "predefined-names") {
-        const entries = Array.from(files).map((file, idx) => {
+      const fileArray = Array.from(files);
+      const hasNameless = fileArray.some((f) => !String(f.name || "").trim());
+      if (selectedMode === "predefined-names" || (fileArray.length > 0 && hasNameless)) {
+        const entries = fileArray.map((file, idx) => {
           const { extension } = splitFileName(file.name);
+          const existingName = String(file.name || "").trim();
           return {
             id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
             file,
             extension,
-            enteredName: "",
+            enteredName: existingName,
           };
         });
         setPredefinedNamesFiles(entries);
@@ -1621,7 +1660,27 @@ export default function SimpleApp() {
     setIsDragging(false);
     if (uploadLoading) return;
     const files = e.dataTransfer?.files;
-    if (files?.length > 0) handleFileUpload(files);
+    if (files?.length > 0) {
+      const fileArray = Array.from(files);
+      const hasNameless = fileArray.some((f) => !String(f.name || "").trim());
+      if (hasNameless) {
+        const entries = fileArray.map((file, idx) => {
+          const { extension } = splitFileName(file.name);
+          const existingName = String(file.name || "").trim();
+          return {
+            id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+            file,
+            extension,
+            enteredName: existingName,
+          };
+        });
+        setPredefinedNamesFiles(entries);
+        setPredefinedNamesError("");
+        setPredefinedNamesVisible(true);
+      } else {
+        handleFileUpload(files);
+      }
+    }
   }
 
   /** Show a short, non-technical reason when an upload fails. */
@@ -1640,17 +1699,17 @@ export default function SimpleApp() {
   function queueUnresolvedUploads(items) {
     const list = (items || []).filter((item) => item?.unresolvedUpload);
     if (list.length === 0) return;
-    setManualSupplierQueue((prev) => {
-      const next = [...prev, ...list];
-      if (prev.length === 0) {
-        const firstGuess = list[0]?.candidateSuppliers?.[0]?.name || "";
-        setManualSupplierInput(firstGuess);
-        setManualSupplierError("");
-        setManualSupplierVisible(true);
-      }
-      return next;
-    });
+    setManualSupplierQueue((prev) => [...prev, ...list]);
   }
+
+  // Open supplier modal when queue gets items (avoids calling setState from inside queue updater so modal shows reliably)
+  useEffect(() => {
+    if (manualSupplierQueue.length > 0 && !manualSupplierVisible) {
+      setManualSupplierVisible(true);
+      setManualSupplierInput(manualSupplierQueue[0]?.candidateSuppliers?.[0]?.name || "");
+      setManualSupplierError("");
+    }
+  }, [manualSupplierQueue, manualSupplierVisible]);
 
   function popManualSupplierQueue(showNextPrompt = true) {
     setManualSupplierQueue((prev) => {
@@ -1660,6 +1719,8 @@ export default function SimpleApp() {
       setManualSupplierError("");
       if (next.length > 0 && showNextPrompt) {
         setTimeout(() => setManualSupplierVisible(true), 160);
+      } else if (next.length === 0) {
+        setUploadLoading(false);
       }
       return next;
     });
@@ -1705,6 +1766,15 @@ export default function SimpleApp() {
       if (createdCount > 0) {
         updateDashboardData((prev) => applyUploadSuccessToDashboardData(prev, createdCount));
       }
+      const dashRes = await fetch(DASHBOARD_DATA_URL, { credentials: "include" });
+      const dashJson = dashRes.ok ? await dashRes.json() : null;
+      const newRows = Array.isArray(dashJson?.supplierSummary) ? dashJson.supplierSummary : [];
+      const merged =
+        batchSessionSupplierSummary != null && batchSessionSupplierSummary.length > 0
+          ? [...batchSessionSupplierSummary, ...newRows]
+          : newRows;
+      setBatchSessionSupplierSummary(merged);
+      updateDashboardData((d) => (d ? { ...d, supplierSummary: merged } : d));
       popManualSupplierQueue(true);
       revalidateDashboardInBackground();
     } catch (err) {
@@ -1725,6 +1795,9 @@ export default function SimpleApp() {
     setManualSupplierQueue([]);
     setManualSupplierInput("");
     setManualSupplierError("");
+    setUploadLoading(false);
+    setBatchSessionSupplierSummary(null);
+    setBatchSessionMergeMode(false);
   }
 
   function switchToLatestBatchTab() {
@@ -1757,18 +1830,23 @@ export default function SimpleApp() {
     setManualSupplierInput("");
     setManualSupplierError("");
     setManualSupplierVisible(false);
+    setBatchSessionSupplierSummary(null);
+    setBatchSessionMergeMode(false);
     try {
       if (fileArray.length > 1) {
+        setUploadSuccess("Uploading…");
         const formData = new FormData();
         fileArray.forEach((file) => formData.append("files", file));
-        const response = await fetch("/api/v2/invoice/batch-invoice-file-upload", {
+        const response = await fetch("/api/v2/invoice/batch-invoice-file-upload?stream=1", {
           method: "POST",
           body: formData,
           credentials: "include",
+          headers: { Accept: "text/event-stream" },
         });
-        const data = await response.json();
         if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
           if (data?.status === "needs_supplier_input" && data?.unresolvedUpload) {
+            queueUnresolvedRef.current = true;
             queueUnresolvedUploads([{
               fileName: data.fileName || fileArray[0]?.name || "File",
               candidateSuppliers: data.candidateSuppliers || [],
@@ -1780,58 +1858,109 @@ export default function SimpleApp() {
           setUploadError(getUploadErrorMessage(data?.message, "batch"));
           return;
         }
-        const errors = data.errors || [];
-        const unresolvedErrors = errors.filter((e) => e?.status === "needs_supplier_input" && e?.unresolvedUpload);
-        const failedErrors = errors.filter((e) => e?.status !== "needs_supplier_input");
-        const count = (data.results || []).length;
-        const totalCreated = (data.results || []).reduce((s, r) => s + (r.createdCount ?? 0), 0);
-        if (unresolvedErrors.length > 0) {
-          queueUnresolvedUploads(unresolvedErrors.map((entry) => ({
-            fileName: entry.fileName,
-            candidateSuppliers: entry.candidateSuppliers || [],
-            unresolvedUpload: entry.unresolvedUpload,
-          })));
-        }
-        if (errors.length > 0) {
-          const allFailed = count === 0;
-          if (allFailed) {
-            setUploadError(
-              unresolvedErrors.length > 0
-                ? `${unresolvedErrors.length} file(s) need supplier name input before they can continue.`
-                : "Upload failed. We couldn't process any of the files. Please check that each file is a valid PDF or Excel and that we can identify the supplier."
-            );
+        const contentType = response.headers.get("content-type") || "";
+        const applyBatchResult = (data) => {
+          const errors = data.errors || [];
+          const unresolvedErrors = errors.filter((e) => e?.status === "needs_supplier_input" && e?.unresolvedUpload);
+          const failedErrors = errors.filter((e) => e?.status !== "needs_supplier_input");
+          const count = (data.results || []).length;
+          const totalCreated = (data.results || []).reduce((s, r) => s + (r.createdCount ?? 0), 0);
+          if (unresolvedErrors.length > 0) {
+            queueUnresolvedRef.current = true;
+            if (count > 0) setBatchSessionMergeMode(true);
+            else setBatchSessionSupplierSummary([]);
+            const list = unresolvedErrors.map((entry) => ({
+              fileName: entry.fileName,
+              candidateSuppliers: entry.candidateSuppliers || [],
+              unresolvedUpload: entry.unresolvedUpload,
+            }));
+            setManualSupplierQueue(list);
+            setManualSupplierError("");
+          }
+          if (errors.length > 0) {
+            const allFailed = count === 0;
+            if (allFailed) {
+              setUploadError(
+                unresolvedErrors.length > 0
+                  ? `${unresolvedErrors.length} file(s) need supplier name input before they can continue.`
+                  : "Upload failed. We couldn't process any of the files. Please check that each file is a valid PDF or Excel and that we can identify the supplier."
+              );
+            } else {
+              setUploadSuccess(
+                `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
+              );
+              switchToLatestBatchTab();
+              const genericErrorCount = failedErrors.length;
+              const unresolvedCount = unresolvedErrors.length;
+              if (genericErrorCount > 0 || unresolvedCount > 0) {
+                const parts = [];
+                if (unresolvedCount > 0) parts.push(`${unresolvedCount} file(s) need supplier name input`);
+                if (genericErrorCount > 0) parts.push(`${genericErrorCount} file(s) couldn't be processed`);
+                setUploadError(`${parts.join(". ")}.`);
+              }
+            }
           } else {
             setUploadSuccess(
               `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
             );
             switchToLatestBatchTab();
-            const genericErrorCount = failedErrors.length;
-            const unresolvedCount = unresolvedErrors.length;
-            if (genericErrorCount > 0 || unresolvedCount > 0) {
-              const parts = [];
-              if (unresolvedCount > 0) parts.push(`${unresolvedCount} file(s) need supplier name input`);
-              if (genericErrorCount > 0) parts.push(`${genericErrorCount} file(s) couldn't be processed`);
-              setUploadError(`${parts.join(". ")}.`);
-            }
           }
+          if (totalCreated > 0) {
+            confetti({
+              particleCount: 80,
+              spread: 70,
+              origin: { y: 0.6 },
+              colors: ["#4ADE80", "#22C55E", "#7B8CDE", "#A5B4FC", "#FBBF24"],
+              decay: 0.9,
+              ticks: 100,
+            });
+            updateDashboardData((prev) => applyUploadSuccessToDashboardData(prev, totalCreated));
+          }
+          revalidateDashboardInBackground();
+        };
+        if (contentType.includes("text/event-stream")) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let resultApplied = false;
+          const processLine = (line) => {
+            const s = line.trim();
+            if (!s.startsWith("data: ")) return;
+            try {
+              const event = JSON.parse(s.slice(6));
+              if (event.done != null && event.total != null) {
+                setUploadProgress({ done: event.done, total: event.total });
+                if (event.fileOutcome?.status === "needs_supplier_input" && event.fileOutcome?.unresolvedUpload) {
+                  queueUnresolvedRef.current = true;
+                  queueUnresolvedUploads([{
+                    fileName: event.fileOutcome.fileName,
+                    candidateSuppliers: event.fileOutcome.candidateSuppliers || [],
+                    unresolvedUpload: event.fileOutcome.unresolvedUpload,
+                  }]);
+                }
+              } else if (event.result && !resultApplied) {
+                resultApplied = true;
+                applyBatchResult(event.result);
+              }
+            } catch (_) {}
+          };
+          while (true) {
+            const { value, done } = await reader.read();
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split("\n\n");
+            buffer = parts.pop() || "";
+            for (const part of parts) {
+              const line = part.trim();
+              if (line) processLine(line);
+            }
+            if (done) break;
+          }
+          if (buffer.trim()) processLine(buffer);
         } else {
-          setUploadSuccess(
-            `${count} file(s) processed.${totalCreated > 0 ? ` ${totalCreated} invoice(s) saved.` : ""}`
-          );
-          switchToLatestBatchTab();
+          const data = await response.json();
+          applyBatchResult(data);
         }
-        if (totalCreated > 0) {
-          confetti({
-            particleCount: 80,
-            spread: 70,
-            origin: { y: 0.6 },
-            colors: ["#4ADE80", "#22C55E", "#7B8CDE", "#A5B4FC", "#FBBF24"],
-            decay: 0.9,
-            ticks: 100,
-          });
-          updateDashboardData((prev) => applyUploadSuccessToDashboardData(prev, totalCreated));
-        }
-        revalidateDashboardInBackground();
+        setUploadProgress(null);
       } else {
         const formData = new FormData();
         formData.append("file", fileArray[0]);
@@ -1843,6 +1972,7 @@ export default function SimpleApp() {
         const data = await response.json();
         if (!response.ok) {
           if (data?.status === "needs_supplier_input" && data?.unresolvedUpload) {
+            queueUnresolvedRef.current = true;
             queueUnresolvedUploads([{
               fileName: data.fileName || fileArray[0]?.name || "File",
               candidateSuppliers: data.candidateSuppliers || [],
@@ -1875,6 +2005,11 @@ export default function SimpleApp() {
     } catch (err) {
       setUploadError(getUploadErrorMessage(err?.message, "network"));
     } finally {
+      if (queueUnresolvedRef.current) {
+        queueUnresolvedRef.current = false;
+        return;
+      }
+      setUploadProgress(null);
       setUploadLoading(false);
     }
   }
@@ -2030,7 +2165,11 @@ export default function SimpleApp() {
           {uploadLoading && (
             <p className={styles.uploadSuccess}>
               <span className={styles.loadingSpinner} aria-hidden />
-              <span className={styles.loadingMessage}>Processing…</span>
+              <span className={styles.loadingMessage}>
+                {uploadProgress?.total != null && uploadProgress.total > 0
+                  ? `Processing ${uploadProgress.done ?? 0} of ${uploadProgress.total} files…`
+                  : "Processing…"}
+              </span>
             </p>
           )}
           {uploadError && !uploadLoading && (
@@ -2541,7 +2680,7 @@ export default function SimpleApp() {
                             const fa = p.fileAmountGBP != null ? p.fileAmountGBP : (Number(p.fileInvoice?.amount) ?? 0);
                             const xa = p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(p.xeroInvoice?.amount) ?? 0);
                             const diff = p.differenceGBP != null ? p.differenceGBP : 0;
-                            const date = p.fileInvoice?.dueDate || p.fileInvoice?.date || p.xeroInvoice?.dueDate || p.xeroInvoice?.date;
+                            const date = p.fileInvoice?.date || p.fileInvoice?.dueDate || p.xeroInvoice?.date || p.xeroInvoice?.dueDate;
                             const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
                             const fileCur = (p.fileInvoice?.currency && String(p.fileInvoice.currency).toUpperCase()) || "GBP";
                             const xeroCur = (p.xeroInvoice?.currency && String(p.xeroInvoice.currency).toUpperCase()) || "GBP";
@@ -2573,7 +2712,7 @@ export default function SimpleApp() {
                             ...(tab2Pairs || []).map((p) => {
                               const fa = p.fileAmountGBP != null ? p.fileAmountGBP : (Number(p.fileInvoice?.amount) ?? 0);
                               const xa = p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(p.xeroInvoice?.amount) ?? 0);
-                              const date = p.xeroInvoice?.dueDate || p.xeroInvoice?.date || p.fileInvoice?.dueDate || p.fileInvoice?.date;
+                              const date = p.xeroInvoice?.date || p.xeroInvoice?.dueDate || p.fileInvoice?.date || p.fileInvoice?.dueDate;
                               const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
                               const fileCur = (p.fileInvoice?.currency && String(p.fileInvoice.currency).toUpperCase()) || "GBP";
                               const xeroCur = (p.xeroInvoice?.currency && String(p.xeroInvoice.currency).toUpperCase()) || "GBP";
@@ -2601,7 +2740,7 @@ export default function SimpleApp() {
                             }),
                             ...(tab2Unpaired || []).map((u) => {
                               const amt = u.amountGBP != null ? u.amountGBP : (Number(u.amount) || 0);
-                              const dateStr = (u.dueDate || u.date) ? new Date(u.dueDate || u.date).toLocaleDateString("en-GB") : "–";
+                              const dateStr = (u.date || u.dueDate) ? new Date(u.date || u.dueDate).toLocaleDateString("en-GB") : "–";
                               const origAmt = u.amount != null ? Number(u.amount) : null;
                               return {
                                 deleteInvoiceId: u._id ? String(u._id) : null,
@@ -2630,7 +2769,7 @@ export default function SimpleApp() {
                             .map((p) => {
                               const fa = p.fileAmountGBP != null ? p.fileAmountGBP : (Number(p.fileInvoice?.amount) ?? 0);
                               const xa = p.xeroAmountGBP != null ? p.xeroAmountGBP : (Number(p.xeroInvoice?.amount) ?? 0);
-                              const date = p.xeroInvoice?.dueDate || p.xeroInvoice?.date || p.fileInvoice?.dueDate || p.fileInvoice?.date;
+                              const date = p.xeroInvoice?.date || p.xeroInvoice?.dueDate || p.fileInvoice?.date || p.fileInvoice?.dueDate;
                               const dateStr = date ? new Date(date).toLocaleDateString("en-GB") : "–";
                               const fileCur = (p.fileInvoice?.currency && String(p.fileInvoice.currency).toUpperCase()) || "GBP";
                               const xeroCur = (p.xeroInvoice?.currency && String(p.xeroInvoice.currency).toUpperCase()) || "GBP";
@@ -2731,7 +2870,7 @@ export default function SimpleApp() {
                     const detailColumns = [
                       ...(activeTab === "latest" || activeTab === "attention" ? [["select", ""]] : []),
                       ["invoiceNumber", "INVOICE #"],
-                      ["date", "DATE"],
+                      ["date", "INVOICE DATE"],
                       ["issue", "ISSUE"],
                       ["supplierAmt", "SUPPLIER AMT"],
                       ["xeroAmt", "XERO AMT"],
@@ -3444,11 +3583,14 @@ export default function SimpleApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="manual-supplier-title" className={styles.manualSupplierTitle}>
-              Enter supplier name
+              {manualSupplierQueue.length > 1
+                ? `Supplier name (file 1 of ${manualSupplierQueue.length})`
+                : "Enter supplier name"}
             </h2>
             <p className={styles.manualSupplierText}>
-              We could not confidently identify a supplier for{" "}
+              We couldn&apos;t identify the supplier for{" "}
               <strong>{currentManualSupplierItem.fileName || currentManualSupplierItem.unresolvedUpload?.fileName || "this file"}</strong>.
+              Enter the supplier name to continue.
             </p>
             {Array.isArray(currentManualSupplierItem.candidateSuppliers) &&
               currentManualSupplierItem.candidateSuppliers.length > 0 && (
@@ -3525,16 +3667,20 @@ export default function SimpleApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 id="predefined-names-title" className={styles.manualSupplierTitle}>
-              Upload with predefined names
+              {predefinedNamesFiles.some((e) => !String(e.file?.name || "").trim())
+                ? "Name your files"
+                : "Upload with predefined names"}
             </h2>
             <p className={styles.manualSupplierText}>
-              Review files below and set the name for each one before upload.
+              {predefinedNamesFiles.some((e) => !String(e.file?.name || "").trim())
+                ? "Some of your files don't have names. Please enter a name for each file below before uploading."
+                : "Review files below and set the name for each one before upload."}
             </p>
             <div className={styles.predefinedNamesList}>
               {predefinedNamesFiles.map((entry) => (
                 <div key={entry.id} className={styles.predefinedNamesRow}>
                   <div className={styles.predefinedNamesFile}>
-                    <strong>{entry.file.name}</strong>
+                    <strong>{String(entry.file?.name || "").trim() || "(No name)"}</strong>
                     <span>{entry.extension || "No extension"}</span>
                   </div>
                   <input

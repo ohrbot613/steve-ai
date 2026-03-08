@@ -36,7 +36,6 @@ const processSchema = new mongoose.Schema(
 // Indexes for faster lookups (user, status, processId, createdAt already have index: true on their fields)
 processSchema.index({ processId: 1 });
 processSchema.index({ status: 1 });
-processSchema.index({ process: 1 });
 processSchema.index({ createdAt: -1 });
 
 const Process = mongoose.model("Process", processSchema);

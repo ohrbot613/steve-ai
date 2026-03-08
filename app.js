@@ -27,10 +27,10 @@ if (process.env.NODE_ENV === 'production') {
   }));
 }
 
-// Rate limiting configuration (disabled in development to avoid blocking dev/login)
+// Rate limiting: stricter in production, relaxed in development
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100000, // No effective limit in dev
+  max: process.env.NODE_ENV === 'production' ? 1000 : 100000,
   message: {
     status: 'error',
     message: 'Too many requests from this IP, please try again after 15 minutes'
@@ -39,52 +39,52 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Stricter rate limit for authentication endpoints (prevent brute force); disabled in dev
-// const authLimiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: process.env.NODE_ENV === 'production' ? 5 : 100000, // No effective limit in dev
-//   message: {
-//     status: 'error',
-//     message: 'Too many login attempts from this IP, please try again after 15 minutes'
-//   },
-//   standardHeaders: true,
-//   legacyHeaders: false,
-//   skipSuccessfulRequests: true, // Don't count successful logins against the limit
-// });
+// Stricter rate limit for authentication endpoints (prevent brute force)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.NODE_ENV === 'production' ? 10 : 100000,
+  message: {
+    status: 'error',
+    message: 'Too many login attempts from this IP, please try again after 15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true, // Don't count successful logins against the limit
+});
 
-// CORS configuration for production
-// const allowedOrigins = process.env.ALLOWED_ORIGINS 
-//   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
-//   : (process.env.NODE_ENV === 'production' ? ['https://dev.epikaai.com'] : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:3001']);
+// CORS configuration
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+  : (process.env.NODE_ENV === 'production' ? ['https://dev.epikaai.com'] : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:3001']);
 
-// router.use((req, res, next) => {
-//   const origin = req.headers.origin;
-//   const host = req.headers.host;
-//   let isSameOrigin = false;
-//   if (origin && host) {
-//     try {
-//       isSameOrigin = new URL(origin).host === host;
-//     } catch (_) { /* ignore malformed Origin */ }
-//   }
+router.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const host = req.headers.host;
+  let isSameOrigin = false;
+  if (origin && host) {
+    try {
+      isSameOrigin = new URL(origin).host === host;
+    } catch (_) { /* ignore malformed Origin */ }
+  }
 
-//   if (!origin || isSameOrigin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
-//     res.header('Access-Control-Allow-Origin', origin || '*');
-//     res.header('Access-Control-Allow-Credentials', 'true');
-//     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-//     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-copilotcloud-public-api-key');
+  if (!origin || isSameOrigin || allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-copilotcloud-public-api-key');
 
-//     if (req.method === 'OPTIONS') {
-//       return res.sendStatus(200);
-//     }
-//   } else {
-//     return res.status(403).json({
-//       status: 'error',
-//       message: 'Origin not allowed'
-//     });
-//   }
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+  } else {
+    return res.status(403).json({
+      status: 'error',
+      message: 'Origin not allowed'
+    });
+  }
 
-//   next();
-// });
+  next();
+});
 
 // Body parsing middleware - limit payload size to prevent DoS
 // report-error needs larger limit for screenshot + file attachments (base64)
@@ -103,11 +103,12 @@ router.use(express.static(path.join(__dirname, "public")));
 
 
 
-// Apply rate limiting to API routes (disabled when NODE_ENV !== 'production')
-// const maybeAuthLimiter = process.env.NODE_ENV === 'production' ? authLimiter : (req, res, next) => next();
-// const maybeApiLimiter = process.env.NODE_ENV === 'production' ? apiLimiter : (req, res, next) => next();
-// router.use("/api/v1/auth/login", maybeAuthLimiter); // Stricter limit for login
-router.use("/api/v1/auth",  authRoutes);
+// Apply rate limiters (stricter in production)
+const maybeAuthLimiter = process.env.NODE_ENV === 'production' ? authLimiter : (req, res, next) => next();
+const maybeApiLimiter = process.env.NODE_ENV === 'production' ? apiLimiter : (req, res, next) => next();
+router.use("/api", maybeApiLimiter);
+router.use("/api/v1/auth/login", maybeAuthLimiter);
+router.use("/api/v1/auth", authRoutes);
 router.use("/api/v1",  require("./routes/reportErrorRoutes"));
 router.use("/api/v1/invoice",  invoiceRoutes);
 router.use("/api/file",  invoiceRoutes);

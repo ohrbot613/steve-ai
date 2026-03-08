@@ -2,6 +2,10 @@ const { fileTypeFromBuffer } = require("file-type");
 const XLSX = require("xlsx");
 const { PDFParse } = require("pdf-parse");
 const axios = require("axios");
+const sharp = require("sharp");
+
+const IMAGE_MAX_WIDTH = 1600;
+const IMAGE_JPEG_QUALITY = 75;
 
 const OPEN_ROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPEN_ROUTER_RETRY_MAX = 3;
@@ -11,6 +15,7 @@ const OPEN_ROUTER_RETRY_BASE_MS = 2000;
  * POST to OpenRouter with retry on 429/503. Uses exponential backoff; respects Retry-After if present.
  */
 async function openRouterPost(requestBody, openRouterKey) {
+    const startMs = Date.now();
     let lastError;
     for (let attempt = 0; attempt <= OPEN_ROUTER_RETRY_MAX; attempt++) {
         try {
@@ -22,6 +27,8 @@ async function openRouterPost(requestBody, openRouterKey) {
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
             });
+            const elapsedMs = Date.now() - startMs;
+            console.log("[parseFile] openRouterPost OK", { elapsedMs, attempts: attempt + 1 });
             return response;
         } catch (err) {
             lastError = err;
@@ -44,6 +51,8 @@ async function openRouterPost(requestBody, openRouterKey) {
                 : (err.message || "Request failed");
             const e = new Error(msg);
             e.statusCode = status;
+            const elapsedMs = Date.now() - startMs;
+            console.log("[parseFile] openRouterPost ERROR", { elapsedMs, attempts: attempt + 1, status, message: err.message });
             throw e;
         }
     }
@@ -156,6 +165,56 @@ async function describeImageWithAI(imageDataUrl) {
         console.error("[describeImageWithAI]", err.message);
         return null;
     }
+}
+
+/**
+ * Extract only text from an image (minimal prompt, faster than describeImageWithAI).
+ * Returns { textInImage } or null. Use when you only need OCR text.
+ */
+async function getTextFromImageWithAI(imageDataUrl) {
+    const openRouterKey = process.env.OPEN_ROUTER;
+    if (!openRouterKey || !imageDataUrl) return null;
+    const prompt = 'Reply with a JSON object only (no markdown): { "textInImage": "all text you can read in this image, or empty string if none" }';
+    try {
+        const response = await axios.post(
+            OPEN_ROUTER_URL,
+            {
+                model: "google/gemini-2.5-flash",
+                messages: [
+                    { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageDataUrl } }] },
+                ],
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${openRouterKey}`,
+                    "Content-Type": "application/json",
+                },
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+            }
+        );
+        const raw = response.data?.choices?.[0]?.message?.content?.trim() || "";
+        if (!raw) return null;
+        const cleaned = raw.replace(/^```\w*\n?|\n?```$/g, "").trim();
+        const parsed = JSON.parse(cleaned);
+        return { textInImage: parsed.textInImage ?? "" };
+    } catch (err) {
+        console.error("[getTextFromImageWithAI]", err.message);
+        return null;
+    }
+}
+
+/** Downscale image dataUrl to smaller JPEG for faster upload/vision. */
+async function downscaleImageForVision(dataUrl) {
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) return dataUrl;
+    const base64 = match[2].replace(/\s/g, "");
+    const buffer = Buffer.from(base64, "base64");
+    const out = await sharp(buffer)
+        .resize({ width: IMAGE_MAX_WIDTH, withoutEnlargement: true })
+        .jpeg({ quality: IMAGE_JPEG_QUALITY })
+        .toBuffer();
+    return `data:image/jpeg;base64,${out.toString("base64")}`;
 }
 
 /**
@@ -333,11 +392,13 @@ const PARSE_FILE_LOG = "[parseFile]";
  */
 async function parseFile(fileBuffer, fileName) {
     const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    const startMs = Date.now();
     console.log(PARSE_FILE_LOG, "parseFile CALL", { fileName: fileName || "(unnamed)", fileSize, fileType: "pending" });
 
     const fileType = await fileTypeFromBuffer(fileBuffer);
     if (!fileType) {
-        console.log(PARSE_FILE_LOG, "parseFile OUTCOME", { success: false, error: "Unable to determine file type" });
+        const elapsedMs = Date.now() - startMs;
+        console.log(PARSE_FILE_LOG, "parseFile OUTCOME", { success: false, error: "Unable to determine file type", elapsedMs });
         throw new Error("Unable to determine file type");
     }
     console.log(PARSE_FILE_LOG, "parseFile DATA", { fileName: fileName || "(unnamed)", detectedType: fileType.ext, mime: fileType.mime });
@@ -372,11 +433,13 @@ async function parseFile(fileBuffer, fileName) {
             data: allRecords,
             raw: JSON.stringify(allRecords, null, 2),
         };
+        const elapsedMs = Date.now() - startMs;
         console.log(PARSE_FILE_LOG, "parseFile OUTCOME", {
             success: true,
             type: "excel",
             rowCount,
             rawLength: result.raw?.length ?? 0,
+            elapsedMs,
         });
         return result;
     }
@@ -429,6 +492,7 @@ async function parseFile(fileBuffer, fileName) {
                 });
             }
 
+            const elapsedMs = Date.now() - startMs;
             const result = {
                 type: "pdf",
                 data: finalText,
@@ -441,12 +505,14 @@ async function parseFile(fileBuffer, fileName) {
                 textLength: finalText.length,
                 imageCount: images.length,
                 logoCompanyNames: logoCompanyNames.length ? logoCompanyNames : undefined,
+                elapsedMs,
             });
             console.log(PARSE_FILE_LOG, "parseFile OUTCOME", {
                 success: true,
                 type: "pdf",
                 textLength: finalText.length,
                 imageCount: images.length,
+                elapsedMs,
             });
             return result;
         } finally {
@@ -454,7 +520,8 @@ async function parseFile(fileBuffer, fileName) {
         }
     }
 
-    console.log(PARSE_FILE_LOG, "parseFile OUTCOME", { success: false, error: `Unsupported file type: ${fileType.ext}` });
+    const elapsedMsUnsupported = Date.now() - startMs;
+    console.log(PARSE_FILE_LOG, "parseFile OUTCOME", { success: false, error: `Unsupported file type: ${fileType.ext}`, elapsedMs: elapsedMsUnsupported });
     throw new Error(`Unsupported file type: ${fileType.ext}. Only PDF and Excel are supported.`);
 }
 
@@ -465,6 +532,7 @@ async function parseFile(fileBuffer, fileName) {
  */
 async function getCompaniesFromFile(fileBuffer, fileName) {
     const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    const startMs = Date.now();
     console.log(PARSE_FILE_LOG, "getCompaniesFromFile CALL", { fileName: fileName || "(unnamed)", fileSize });
 
     const openRouterKey = process.env.OPEN_ROUTER;
@@ -508,27 +576,81 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
             ],
         };
     } else {
-        // PDF: send file to AI
-        const mime = fileType.mime ?? "application/pdf";
-        const fileDataUrl = `data:${mime};base64,${fileBuffer.toString("base64")}`;
-        requestBody = {
-            model: "google/gemini-2.5-flash",
-            messages: [
-                {
-                    role: "user",
-                    content: [
-                        { type: "text", text: prompt },
-                        { type: "file", file: { filename: fileName || "document", file_data: fileDataUrl } },
-                    ],
-                },
-            ],
-            plugins: [{ id: "file-parser", pdf: { engine: "mistral-ocr" } }],
-        };
-    }
+        // PDF: break up into text + array of images, then send those to the AI
+        const parser = new PDFParse({ data: fileBuffer });
+        let extractedText = "";
+        let firstPageText = "";
+        const images = [];
+        try {
+            const textResult = await parser.getText();
+            extractedText = (textResult?.text || "").trim();
+            firstPageText = (textResult?.pages?.[0]?.text || "").trim() || extractedText.slice(0, 4000);
+            let imageResult = { pages: [] };
+            try {
+                imageResult = await parser.getImage({ imageThreshold: 0, imageDataUrl: true, imageBuffer: false });
+            } catch (_) {}
+            if (imageResult?.pages) {
+                imageResult.pages.forEach((page, pageIndex) => {
+                    (page.images || []).forEach((img, imgIndex) => {
+                        const dataUrl = img.dataUrl ?? img.dataURL ?? (img.data ? `data:image/png;base64,${(Buffer.isBuffer(img.data) ? img.data : Buffer.from(img.data)).toString("base64")}` : null);
+                        if (dataUrl) images.push({ page: pageIndex + 1, index: imgIndex, dataUrl });
+                    });
+                });
+            }
+        } finally {
+            if (parser.destroy) await parser.destroy();
+        }
 
+        const hasText = extractedText.length > 0;
+        const hasImages = images.length > 0;
+        if (hasText || hasImages) {
+            const blockStartMs = Date.now();
+            if (hasImages) {
+                const downscaled = await Promise.all(images.map((img) => downscaleImageForVision(img.dataUrl)));
+                const results = await Promise.all(downscaled.map((dataUrl) => getTextFromImageWithAI(dataUrl)));
+                results.forEach((result, i) => {
+                    images[i].textOnImage = result?.textInImage ?? "";
+                });
+                const textExtracted = images.map((img) => img.textOnImage || "").filter(Boolean);
+            }
+            const imageTexts = images.map((img) => img.textOnImage || "").filter(Boolean);
+            const labeledImageTexts = images.map((img, i) => `Image ${i + 1}:\n${(img.textOnImage || "").trim()}`).filter((s) => s.length > "Image 1:\n".length);
+            const pdfFirstPageSection = firstPageText ? `PDF (first page):\n${firstPageText}` : "";
+            const combinedText = [...labeledImageTexts, pdfFirstPageSection].filter(Boolean).join("\n\n");
+            const content = [
+                { type: "text", text: prompt + (combinedText ? "\n\nDocument text:\n" + combinedText : "") },
+                ...images.map((img) => ({ type: "image_url", image_url: { url: img.dataUrl } })),
+            ].filter((part) => part.type !== "image_url" || part.image_url?.url);
+            requestBody = {
+                model: "google/gemini-2.5-flash",
+                messages: [{ role: "user", content }],
+            };
+        } else {
+            // Fallback: send whole PDF (e.g. image-only PDF)
+            const mime = fileType.mime ?? "application/pdf";
+            const fileDataUrl = `data:${mime};base64,${fileBuffer.toString("base64")}`;
+            requestBody = {
+                model: "google/gemini-2.5-flash",
+                messages: [
+                    {
+                        role: "user",
+                        content: [
+                            { type: "text", text: prompt },
+                            { type: "file", file: { filename: fileName || "document", file_data: fileDataUrl } },
+                        ],
+                    },
+                ],
+                plugins: [{ id: "file-parser", pdf: { engine: "mistral-ocr" } }],
+            };
+            console.log(PARSE_FILE_LOG, "getCompaniesFromFile DATA pdf fallback full file");
+        }
+    }
+    
     const response = await openRouterPost(requestBody, openRouterKey);
     const raw = response.data?.choices?.[0]?.message?.content?.trim() || "";
+    const elapsedMs = Date.now() - startMs;
     if (!raw) {
+        console.log(PARSE_FILE_LOG, "getCompaniesFromFile OUTCOME⏱❤️", { success: false, elapsedMs });
         return { companyNames: [{ name: "", confidence: 0 }, { name: "", confidence: 0 }, { name: "", confidence: 0 }] };
     }
     const cleaned = raw.replace(/^```\w*\n?|\n?```$/g, "").trim();
@@ -591,8 +713,8 @@ async function getCompaniesFromFile(fileBuffer, fileName) {
         name: entry.name,
         confidence: nextUniqueConfidence(entry.adjustedConfidence),
     }));
-    console.log(PARSE_FILE_LOG, "getCompaniesFromFile DATA", { fileName: fileName || "(unnamed)", companyNames });
-    console.log(PARSE_FILE_LOG, "getCompaniesFromFile OUTCOME", { success: true, companyNames });
+    console.log(PARSE_FILE_LOG, "getCompaniesFromFile DATA", { fileName: fileName || "(unnamed)", companyNames, elapsedMs });
+    console.log(PARSE_FILE_LOG, "getCompaniesFromFile OUTCOME ⏱❤️", { success: true, companyNames, elapsedMs });
     return { companyNames };
 }
 
@@ -628,6 +750,7 @@ Rules:
  */
 async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
     const fileSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : 0;
+    const startMs = Date.now();
     console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision CALL", { fileName: fileName || "(unnamed)", fileSize });
 
     const openRouterKey = process.env.OPEN_ROUTER;
@@ -643,6 +766,7 @@ async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
     console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision DATA", { fileName: fileName || "(unnamed)", detectedType: fileType.ext });
 
     let requestBody;
+    let invoicePdfStartMs = null;
     if (fileType.ext === "xlsx" || fileType.ext === "xls") {
         const workbook = XLSX.read(fileBuffer, { type: "buffer" });
         const parts = [];
@@ -657,6 +781,8 @@ async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
             messages: [{ role: "user", content: INVOICES_AI_PROMPT + "\n\nDocument content:\n" + documentText }],
         };
     } else {
+        invoicePdfStartMs = Date.now();
+        console.log(PARSE_FILE_LOG, "⏱️ getInvoicesFromFileWithAIVision PDF start", { fileName: fileName || "(unnamed)" });
         const mime = fileType.mime ?? "application/pdf";
         const fileDataUrl = `data:${mime};base64,${fileBuffer.toString("base64")}`;
         requestBody = {
@@ -675,14 +801,21 @@ async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
     }
 
     const response = await openRouterPost(requestBody, openRouterKey);
+    if (invoicePdfStartMs != null) {
+        const invoicePdfElapsedSec = ((Date.now() - invoicePdfStartMs) / 1000).toFixed(2);
+        console.log(PARSE_FILE_LOG, "✅ getInvoicesFromFileWithAIVision PDF done",{ elapsedSec: invoicePdfElapsedSec + "s" });
+    }
+
     const raw = response.data?.choices?.[0]?.message?.content?.trim() || "";
+    const elapsedMs = Date.now() - startMs;
     console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision DATA rawResponse", {
         fileName: fileName || "(unnamed)",
         rawLength: raw?.length ?? 0,
         rawPreview: raw ? raw.substring(0, 500) + (raw.length > 500 ? "..." : "") : "",
+        elapsedMs,
     });
     if (!raw) {
-        console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", { success: false, fileDate: null, invoiceCount: 0, reason: "empty AI response" });
+        console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision OUTCOME", { success: false, fileDate: null, invoiceCount: 0, reason: "empty AI response", elapsedMs });
         return { fileDate: null, invoices: [] };
     }
     const cleaned = raw.replace(/^```\w*\n?|\n?```$/g, "").trim();
@@ -717,6 +850,15 @@ async function getInvoicesFromFileWithAIVision(fileBuffer, fileName) {
             paymentStatus: inv.paymentStatus === "paid" || inv.paymentStatus === "unpaid" ? inv.paymentStatus : "unpaid",
         };
     });
+    // If an invoice has only one date (invoiceDate present, dateDue missing),
+    // treat that single date as the due date by moving it to dateDue and clearing invoiceDate.
+    for (const inv of invoices) {
+        if ((inv.dateDue == null || inv.dateDue === "") && inv.invoiceDate) {
+            inv.dateDue = inv.invoiceDate;
+            inv.invoiceDate = null;
+        }
+    }
+    
     const currenciesInFile = [...new Set(invoices.map((inv) => inv.currency).filter(Boolean))];
     console.log(PARSE_FILE_LOG, "getInvoicesFromFileWithAIVision DATA parsedInvoices", {
         fileName: fileName || "(unnamed)",

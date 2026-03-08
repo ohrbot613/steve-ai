@@ -17,8 +17,4 @@ router.use((req, res, next) => {
     res.sendFile(path.join(__dirname, "../views/index.html"));
 });
 
-
-fetch('http://127.0.0.1:7242/ingest/2c1ebcd6-def4-40f4-961d-27e83d539bc4',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'viewRoutes.js:26',message:'Router module loaded',data:{routesRegistered:2},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-// #endregion
-
 module.exports = router;
