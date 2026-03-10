@@ -1,12 +1,12 @@
 name: AI Bug Fixer
 on:
   issues:
-    types: [labeled]  # Trigger when a label is added
+    types: [opened, labeled]
 
 jobs:
   handoff:
-    # ONLY run if the label added is exactly "send to ai"
-    if: github.event.label.name == 'send to ai'
+    # This is the "Magic Line" - it looks through all labels for a match
+    if: contains(github.event.issue.labels.*.name, 'send to ai')
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -21,7 +21,7 @@ jobs:
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
 
-          # 1. Create the payload file using jq
+          # 1. Build JSON Payload
           jq -n \
             --arg title "$RAW_TITLE" \
             --arg body "$RAW_BODY" \
@@ -39,26 +39,26 @@ jobs:
               }
             }' > cursor_payload.json
 
-          # 2. Setup Status Labels
+          # 2. Setup Labels
           gh label create "handed-to-agent" --color "FEF2C0" --force || true
           gh label create "awaiting-approval" --color "BFDADC" --force || true
 
-          # 3. Mark Progress and REMOVE the trigger label
+          # 3. Progress Labels (removes 'send to ai' so it doesn't loop)
           gh issue edit $ISSUE_NUM --add-label "handed-to-agent" --remove-label "send to ai"
-          gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** Label 'send to ai' detected. Sending to Cursor Cloud Agent..."
+          gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** 'send to ai' label detected. Sending to Cursor..."
 
-          # 4. Call Cursor API
+          # 4. API Call
           RESPONSE=$(curl -s -X POST https://api.cursor.com/v0/agents \
             -u "$CURSOR_API_KEY:" \
             -H "Content-Type: application/json" \
             --data @cursor_payload.json)
 
-          # 5. Handle Final State
+          # 5. Handle Response
           if [[ $RESPONSE == *"\"id\":"* ]]; then
             AGENT_URL=$(echo $RESPONSE | jq -r '.target.url')
             gh issue edit $ISSUE_NUM --add-label "awaiting-approval" --remove-label "handed-to-agent"
-            gh issue comment $ISSUE_NUM --body "✅ **Success:** Agent is working! 🔗 [View Work]($AGENT_URL)"
+            gh issue comment $ISSUE_NUM --body "✅ **Success:** Cursor is working! 🔗 [View Work]($AGENT_URL)"
           else
-            gh issue comment $ISSUE_NUM --body "❌ **Actual Error:** Cursor rejected the request. Response: $RESPONSE"
+            gh issue comment $ISSUE_NUM --body "❌ **Error:** API rejected request. Response: $RESPONSE"
             exit 1
           fi
