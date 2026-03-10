@@ -19,8 +19,8 @@ jobs:
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
 
-          # 1. Build JSON Safely
-          PAYLOAD=$(jq -n \
+          # 1. Create the payload file using jq (Safest Method)
+          jq -n \
             --arg title "$RAW_TITLE" \
             --arg body "$RAW_BODY" \
             --arg repo "https://github.com/$GH_REPO" \
@@ -35,27 +35,29 @@ jobs:
               target: {
                 autoCreatePr: true
               }
-            }')
+            }' > cursor_payload.json
 
           # 2. Setup Labels
           gh label create "handed-to-agent" --color "FEF2C0" --force || true
           gh label create "awaiting-approval" --color "BFDADC" --force || true
 
-          # 3. Update Issue
+          # 3. Label & Comment
           gh issue edit $ISSUE_NUM --add-label "handed-to-agent"
-          gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** Sending to Cursor Cloud Agent..."
+          gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** Sending this to the Cursor Cloud Agent..."
 
-          # 4. Call API
+          # 4. Call Cursor API using the file (@)
           RESPONSE=$(curl -s -X POST https://api.cursor.com/v0/agents \
             -u "$CURSOR_API_KEY:" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+            --data @cursor_payload.json)
 
-          # 5. Handle Result
+          echo "Cursor Response: $RESPONSE"
+
+          # 5. Handle Final State
           if [[ $RESPONSE == *"error"* ]]; then
             gh issue comment $ISSUE_NUM --body "❌ **Error:** Cursor rejected the request: $RESPONSE"
             exit 1
           else
             gh issue edit $ISSUE_NUM --add-label "awaiting-approval" --remove-label "handed-to-agent"
-            gh issue comment $ISSUE_NUM --body "✅ **Success:** Cursor is working! Status: 'awaiting-approval'."
+            gh issue comment $ISSUE_NUM --body "✅ **Success:** Cursor is working on a fix! Status: 'awaiting-approval'."
           fi
