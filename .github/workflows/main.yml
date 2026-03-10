@@ -7,23 +7,47 @@ jobs:
   handoff:
     runs-on: ubuntu-latest
     permissions:
-      issues: write   # Allows adding labels and comments
+      issues: write
     steps:
-      - name: Process Issue
+      - name: Process and Handoff to Cursor
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }} # Make sure this is in your Repo Secrets
         run: |
-          ISSUE_NUMBER=${{ github.event.issue.number }}
-          
-          echo "Processing Issue #$ISSUE_NUMBER"
+          ISSUE_NUM=${{ github.event.issue.number }}
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
 
-          # 1. Ensure the 'approved' label exists (Color: Soft Green)
-          # --force updates the color if the label already exists
-          gh label create "approved" --color "C2E0C6" --description "AI validated" --force || true
+          echo "Processing Issue #$ISSUE_NUM"
 
-          # 2. Add a comment to the issue
-          gh issue comment $ISSUE_NUMBER --body "🤖 AI Agent is now processing this bug. Stand by..."
+          # 1. Create labels if they don't exist
+          gh label create "handed-to-agent" --color "FEF2C0" --force || true
+          gh label create "awaiting-approval" --color "BFDADC" --force || true
 
-          # 3. Add 'approved' label and remove 'in-review' (if it exists)
-          gh issue edit $ISSUE_NUMBER --add-label "approved" --remove-label "in-review"
+          # 2. Set initial status
+          gh issue edit $ISSUE_NUM --add-label "handed-to-agent"
+          gh issue comment $ISSUE_NUM --body "🚀 Issue sent to Cursor Cloud Agent. I will update this to 'awaiting-approval' once the handoff is complete."
+
+          # 3. Call Cursor Cloud Agent API
+          # We send the title and body as the prompt context
+          RESPONSE=$(curl -s -X POST https://api.cursor.com/v0/agents \
+            -u "$CURSOR_API_KEY:" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"name\": \"Fix Issue #$ISSUE_NUM\",
+              \"source\": {
+                \"repository\": \"https://github.com/$GH_REPO\",
+                \"ref\": \"main\"
+              },
+              \"prompt\": \"Fix this bug: $ISSUE_TITLE. Context: $ISSUE_BODY\",
+              \"target\": {
+                \"autoCreatePr\": true
+              }
+            }")
+
+          echo "Cursor Response: $RESPONSE"
+
+          # 4. Final state change
+          gh issue edit $ISSUE_NUM --add-label "awaiting-approval" --remove-label "handed-to-agent"
+          gh issue comment $ISSUE_NUM --body "✅ Handoff successful. Agent is working! Review the PR when it appears."
