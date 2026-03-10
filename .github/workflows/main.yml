@@ -7,19 +7,17 @@ jobs:
   handoff:
     runs-on: ubuntu-latest
     permissions:
-      issues: write   # Required to post comments and change labels
+      issues: write
     steps:
       - name: Process Issue
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}  # <--- THIS IS THE FIX
         run: |
           ISSUE_NUMBER=${{ github.event.issue.number }}
           
           echo "Processing Issue #$ISSUE_NUMBER"
 
-          # 1. Add a comment to the issue
+          # Now gh knows which repo to talk to without needing a .git folder
           gh issue comment $ISSUE_NUMBER --body "🤖 AI Agent is now processing this bug. Stand by..."
-
-          # 2. Change the label to 'approved'
-          # Note: This will fail if the label 'approved' doesn't exist yet in your repo
           gh issue edit $ISSUE_NUMBER --add-label "approved"
