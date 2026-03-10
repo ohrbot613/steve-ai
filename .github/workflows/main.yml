@@ -1,0 +1,14 @@
+name: AI Bug Fixer
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add Custom Context & Send
+        run: |
+          echo "Processing Issue #${{ github.event.issue.number }}"
+          # This is where you'd put the API call to your Cloud Agent
+          # Example: curl -X POST https://api.agent.com/v1/...
