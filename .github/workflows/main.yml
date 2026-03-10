@@ -6,9 +6,20 @@ on:
 jobs:
   handoff:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write   # Required to post comments and change labels
     steps:
-      - name: Add Custom Context & Send
+      - name: Process Issue
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Processing Issue #${{ github.event.issue.number }}"
-          # This is where you'd put the API call to your Cloud Agent
-          # Example: curl -X POST https://api.agent.com/v1/...
+          ISSUE_NUMBER=${{ github.event.issue.number }}
+          
+          echo "Processing Issue #$ISSUE_NUMBER"
+
+          # 1. Add a comment to the issue
+          gh issue comment $ISSUE_NUMBER --body "🤖 AI Agent is now processing this bug. Stand by..."
+
+          # 2. Change the label to 'approved'
+          # Note: This will fail if the label 'approved' doesn't exist yet in your repo
+          gh issue edit $ISSUE_NUMBER --add-label "approved"
