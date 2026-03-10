@@ -1,45 +1,56 @@
-name: AI Bug Fixer
-on:
-  issues:
-    types: [opened]
-
-jobs:
-  handoff:
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Handoff to Cursor
+- name: Handoff to Cursor
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          # Pass raw text as env vars to keep them out of the shell command line
+          RAW_TITLE: ${{ github.event.issue.title }}
+          RAW_BODY: ${{ github.event.issue.body }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
-          
-          # 1. Clean the text so it doesn't break the JSON command
-          # We use 'jq' to safely encode the title and body
-          CLEAN_TITLE=$(echo "${{ github.event.issue.title }}" | jq -aRs .)
-          CLEAN_BODY=$(echo "${{ github.event.issue.body }}" | jq -aRs .)
+
+          # 1. Build the JSON payload safely using jq --arg
+          # This handles all quotes, newlines, and special characters automatically
+          PAYLOAD=$(jq -n \
+            --arg title "$RAW_TITLE" \
+            --arg body "$RAW_BODY" \
+            --arg repo "https://github.com/$GH_REPO" \
+            '{
+              prompt: {
+                text: ("Fix this bug. Title: " + $title + " Context: " + $body)
+              },
+              source: {
+                repository: $repo,
+                ref: "main"
+              },
+              target: {
+                autoCreatePr: true
+              }
+            }')
 
           echo "Processing Issue #$ISSUE_NUM"
 
-          # 2. Setup Labels (Created if missing)
+          # 2. Setup Labels
           gh label create "handed-to-agent" --color "FEF2C0" --force || true
           gh label create "awaiting-approval" --color "BFDADC" --force || true
 
-          # 3. Mark as Handed to Agent
+          # 3. Label: Handed to Agent
           gh issue edit $ISSUE_NUM --add-label "handed-to-agent"
           gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** Sending this to the Cursor Cloud Agent..."
 
-          # 4. Call Cursor Cloud Agent API (2026 v0 Format)
-          # Note: prompt is now an object containing 'text'
+          # 4. Send the payload to Cursor
           RESPONSE=$(curl -s -X POST https://api.cursor.com/v0/agents \
             -u "$CURSOR_API_KEY:" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"prompt\": {
-                \"text\": \"Fix this bug. Title: $CLEAN_TITLE. Context: $CLEAN_BODY\"
-              },
-              \"source\": {
-                \"repository
+            -d "$PAYLOAD")
+
+          echo "Cursor Response: $RESPONSE"
+
+          # 5. Handle Success/Failure
+          if [[ $RESPONSE == *"error"* ]]; then
+            gh issue comment $ISSUE_NUM --body "❌ **Error:** Cursor rejected the request. Payload: $RESPONSE"
+            exit 1
+          else
+            gh issue edit $ISSUE_NUM --add-label "awaiting-approval" --remove-label "handed-to-agent"
+            gh issue comment $ISSUE_NUM --body "✅ **Success:** Cursor is working! Label changed to 'awaiting-approval'."
+          fi
