@@ -7,7 +7,8 @@ const XeroTenants = require('../modals/xeroTenantsModal');
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 exports.protect = tryCatchAsync(async (req, res, next) => {
-    const token = req.cookies.token || req.query.token || req.headers.authorization?.replace('Bearer ', '');
+    // Only accept tokens from cookies or Authorization header — never from query strings (prevents token leakage in logs/referrers)
+    const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
 
     if (!token) {
         // Check if it's an API request
@@ -119,7 +120,7 @@ exports.registerXeroCallback = tryCatchAsync(async (req, res) => {
     const state = req.query.state;
     const savedState = req.cookies?.xero_oauth_state;
     res.clearCookie('xero_oauth_state', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax' });
-    if (!state || !savedState || state !== savedState) {
+    if (!state || !savedState || !crypto.timingSafeEqual(Buffer.from(state), Buffer.from(savedState))) {
         return res.status(403).json({ status: 'error', message: 'Invalid or expired OAuth state' });
     }
     const code = req.query.code;
@@ -288,40 +289,46 @@ exports.optionalXeroTokenInfo = tryCatchAsync(async (req, res, next) => {
 });
 
 exports.createUser = tryCatchAsync(async (req, res) => {
+    const { name, email, password } = req.body;
 
-    const hashedPassword = await bcrypt.hash('persofi4321', 10);
-
-    try {
-        // optionally get data from req.body
-        // const { name, email, password, xero } = req.body;
-
-        const newUser = await User.create({
-            name: "Jeffei",
-            email: "ai@persofi.com".toLowerCase(),
-            password: hashedPassword
-        });
-
-
-        const token = jwt.sign(
-            { userId: newUser._id },
-            process.env.JWT_SECRET,
-            { expiresIn: "7d" }
-        );
-        res.status(201)
-            .cookie("token", token, {
-                httpOnly: true,
-                secure: true,
-                sameSite: "strict",
-                maxAge: 7 * 24 * 60 * 60 * 1000
-            })
-            .json({
-                status: "success",
-                user: { id: newUser._id, name: newUser.name, email: newUser.email }
-            });
-    } catch (err) {
-        console.error("Error creating user:", err);
-        res.status(500).json({ status: "error", message: err.message });
+    if (!name || !email || !password) {
+        return res.status(400).json({ status: "error", message: "Name, email, and password are required" });
     }
+
+    if (password.length < 8) {
+        return res.status(400).json({ status: "error", message: "Password must be at least 8 characters" });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+        return res.status(400).json({ status: "error", message: "Email already exists" });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = await User.create({
+        name: name.trim(),
+        email: normalizedEmail,
+        password: hashedPassword
+    });
+
+    const token = jwt.sign(
+        { userId: newUser._id },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" }
+    );
+    res.status(201)
+        .cookie("token", token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: "strict",
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        })
+        .json({
+            status: "success",
+            user: { id: newUser._id, name: newUser.name, email: newUser.email }
+        });
 })
 
 exports.createUserForTenant = tryCatchAsync(async (req, res) => {
@@ -332,6 +339,13 @@ exports.createUserForTenant = tryCatchAsync(async (req, res) => {
         return res.status(400).json({
             status: "error",
             message: "Name, email, and password are required"
+        });
+    }
+
+    if (password.length < 8) {
+        return res.status(400).json({
+            status: "error",
+            message: "Password must be at least 8 characters"
         });
     }
 

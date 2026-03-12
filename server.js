@@ -25,10 +25,10 @@ const path = require("path");
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
         });
-        console.log("MongoDB connected successfully");
+        if (process.env.NODE_ENV !== 'production') console.log("MongoDB connected successfully");
         xeroPollingService.start();
     } catch (error) {
-        console.error("MongoDB connection failed:", error.message);
+        console.error("MongoDB connection failed"); // Don't log error.message — may contain credentials
         process.exit(1); // Exit process if database connection fails
    }   
 })()
@@ -46,5 +46,5 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`PDF server running on http://localhost:${PORT}`);
+    if (process.env.NODE_ENV !== 'production') console.log(`Server running on http://localhost:${PORT}`);
 });

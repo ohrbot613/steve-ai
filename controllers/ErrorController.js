@@ -54,8 +54,10 @@ const serializeError = (err) => {
 };
 
 exports.errorHandler = (err, req, res, next) => {
-    // Log error to console
-    console.error("Error 💥:", err);
+    // Log error server-side only (never send full error to client)
+    if (process.env.NODE_ENV !== 'production') {
+        console.error("Error:", err);
+    }
 
     // Send to Sentry when DSN is configured
     if (process.env.SENTRY_DSN) {
@@ -84,11 +86,14 @@ exports.errorHandler = (err, req, res, next) => {
     // Serialize error safely
     const errorResponse = serializeError(err);
 
-    // Fallback for unknown errors
+    // Fallback for unknown errors — hide internal details in production
+    const isProduction = process.env.NODE_ENV === 'production';
     res.status(statusCode).json({
         status: statusCode >= 500 ? "error" : "fail",
-        message: errorResponse.message || "Something went wrong!",
-        ...(errorResponse.payload && { payload: errorResponse.payload }),
-        ...(errorResponse.error && { error: errorResponse.error })
+        message: (isProduction && statusCode >= 500)
+            ? "Something went wrong!"
+            : (errorResponse.message || "Something went wrong!"),
+        ...(!isProduction && errorResponse.payload && { payload: errorResponse.payload }),
+        ...(!isProduction && errorResponse.error && { error: errorResponse.error })
     });
 };

@@ -17,6 +17,9 @@ router.get(
     })
 );
 
+// All script routes require authentication
+router.use(authController.protect);
+
 // router.get("/connect-xero", connectXero);
 router.post("/get-all-vendors", authController.xeroClient, authController.xeroTokenInfo, getAllVenders);
 router.get("/get-one-supplier", authController.xeroClient, authController.xeroTokenInfo, getOneSupplier);
@@ -30,7 +33,6 @@ router.get("/find-invoice-by-id/:vendorId", findInvoiceById);
 
 // Fuzzy name search in MongoDB (top N similar names; no Xero required)
 router.post("/search-similar-names", searchSimilarNames);
-// router.get("/search-similar-names", authController.protect, searchSimilarNames);
 
 // Payment run invoice (needs Xero to fetch supplier payment terms)
 router.post("/payment-run-invoice", authController.xeroClient, authController.xeroTokenInfo, paymentRunInvoice);

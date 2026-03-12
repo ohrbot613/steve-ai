@@ -213,11 +213,8 @@ router.post(
         }
         Sentry.captureMessage(`User report: ${trimmedMessage.slice(0, 100)}${trimmedMessage.length > 100 ? "…" : ""}`);
       });
-      console.log("userId", userId);
-    } else {
+    } else if (process.env.NODE_ENV !== 'production') {
       console.log("[Report error] User report (Sentry not configured):", {
-        message: trimmedMessage,
-        user_id: userId,
         has_screenshot: hasScreenshot,
         attachments_count: attachmentList.length,
       });

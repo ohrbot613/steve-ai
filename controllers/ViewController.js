@@ -3,6 +3,7 @@ const Statements = require("../modals/statementsModal");
 const Statement2 = require("../2.0/modals/statementModal");
 const path = require("path");
 const fs = require("fs");
+const mongoose = require("mongoose");
 exports.home = tryCatchAsync(async (req, res) => {
     res.status(200).render("home");
 });
@@ -29,7 +30,12 @@ exports.allLogs = tryCatchAsync(async (req, res) => {
 
 
 exports.file = tryCatchAsync(async (req, res) => {
-    const fileId = req.params.file; // statement id (v1 or v2) or filename
+    const fileId = req.params.file; // statement id (v1 or v2)
+
+    // Validate ObjectId format to prevent NoSQL injection
+    if (!mongoose.Types.ObjectId.isValid(fileId)) {
+        return res.status(400).send('Invalid file identifier');
+    }
 
     // Try v1 Statements first
     const query = { _id: fileId };
