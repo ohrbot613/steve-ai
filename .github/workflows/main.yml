@@ -5,12 +5,18 @@ on:
 
 jobs:
   handoff:
-    # This is the "Magic Line" - it looks through all labels for a match
-    if: contains(github.event.issue.labels.*.name, 'send to ai')
+    # Improved check: look at the specific label added OR the whole list
+    if: github.event.label.name == 'send to ai' || contains(github.event.issue.labels.*.name, 'send to ai')
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      contents: read  # Required for 'gh' CLI to work properly
     steps:
+      - name: Debug Context (Optional)
+        run: |
+          echo "Triggered by label: ${{ github.event.label.name }}"
+          echo "All labels: ${{ toJson(github.event.issue.labels.*.name) }}"
+
       - name: Handoff to Cursor
         env:
           GH_TOKEN: ${{ github.token }}
@@ -20,42 +26,31 @@ jobs:
           RAW_BODY: ${{ github.event.issue.body }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
-
+          
           # 1. Build JSON Payload
           jq -n \
             --arg title "$RAW_TITLE" \
             --arg body "$RAW_BODY" \
             --arg repo "https://github.com/$GH_REPO" \
             '{
-              prompt: {
-                text: ("Fix this bug. Title: " + $title + " Context: " + $body)
-              },
-              source: {
-                repository: $repo,
-                ref: "main"
-              },
-              target: {
-                autoCreatePr: true
-              }
+              prompt: { text: ("Fix this bug. Title: " + $title + " Context: " + $body) },
+              source: { repository: $repo, ref: "main" },
+              target: { autoCreatePr: true }
             }' > cursor_payload.json
 
-          # 2. Setup Labels
-          gh label create "handed-to-agent" --color "FEF2C0" --force || true
-          gh label create "awaiting-approval" --color "BFDADC" --force || true
+          # 2. Update Issue Status
+          gh issue edit $ISSUE_NUM --add-label "handed-to-agent" --remove-label "send to ai" || true
+          gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** Sending to Cursor..."
 
-          # 3. Progress Labels (removes 'send to ai' so it doesn't loop)
-          gh issue edit $ISSUE_NUM --add-label "handed-to-agent" --remove-label "send to ai"
-          gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** 'send to ai' label detected. Sending to Cursor..."
-
-          # 4. API Call
+          # 3. API Call (Updated to use Bearer Token header)
           RESPONSE=$(curl -s -X POST https://api.cursor.com/v0/agents \
-            -u "$CURSOR_API_KEY:" \
+            -H "Authorization: Bearer $CURSOR_API_KEY" \
             -H "Content-Type: application/json" \
             --data @cursor_payload.json)
 
-          # 5. Handle Response
+          # 4. Handle Response
           if [[ $RESPONSE == *"\"id\":"* ]]; then
-            AGENT_URL=$(echo $RESPONSE | jq -r '.target.url')
+            AGENT_URL=$(echo $RESPONSE | jq -r '.target.url // "https://cursor.com/agents"')
             gh issue edit $ISSUE_NUM --add-label "awaiting-approval" --remove-label "handed-to-agent"
             gh issue comment $ISSUE_NUM --body "✅ **Success:** Cursor is working! 🔗 [View Work]($AGENT_URL)"
           else
