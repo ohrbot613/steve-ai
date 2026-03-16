@@ -1,61 +1,55 @@
-name: AI Bug Fixer
+name: Handoff to Agent
 on:
   issues:
-    types: [opened, labeled]
+    types: [labeled]
 
 jobs:
-  handoff:
-    # RUNS ONLY IF: 
-    # 1. The label just added is 'send to ai'
-    # 2. OR the issue was opened with 'send to ai' already on it
-    if: |
-      github.event.label.name == 'send to ai' || 
-      (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'send to ai'))
-    
+  send-to-ai:
+    # Only runs if the specific label 'handed_to-agnt' was the one added
+    if: github.event.label.name == 'handed_to-agnt'
     runs-on: ubuntu-latest
     permissions:
       issues: write
       contents: read
     
     steps:
-      - name: Handoff to Cursor
+      - name: Send Issue to Cursor
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          RAW_TITLE: ${{ github.event.issue.title }}
-          RAW_BODY: ${{ github.event.issue.body }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
+          TITLE="${{ github.event.issue.title }}"
+          BODY="${{ github.event.issue.body }}"
 
-          # 1. Build JSON Payload
+          # 1. Comment on the issue so you know it started
+          gh issue comment $ISSUE_NUM --body "🤖 **Agent Triggered:** Sending issue to Cursor..."
+
+          # 2. Build the JSON for Cursor
           jq -n \
-            --arg title "$RAW_TITLE" \
-            --arg body "$RAW_BODY" \
+            --arg title "$TITLE" \
+            --arg body "$BODY" \
             --arg repo "https://github.com/$GH_REPO" \
             '{
               prompt: { text: ("Fix this bug. Title: " + $title + " Context: " + $body) },
               source: { repository: $repo, ref: "main" },
               target: { autoCreatePr: true }
-            }' > cursor_payload.json
+            }' > payload.json
 
-          # 2. Update Labels (removes 'send to ai' to prevent loops)
-          gh label create "handed-to-agent" --color "FEF2C0" --force || true
-          gh issue edit $ISSUE_NUM --add-label "handed-to-agent" --remove-label "send to ai" || true
-          gh issue comment $ISSUE_NUM --body "🚀 **Handoff:** Detected 'send to ai'. Sending to Cursor..."
-
-          # 3. API Call (Using Bearer Auth)
+          # 3. Call the Cursor API
           RESPONSE=$(curl -s -X POST https://api.cursor.com/v0/agents \
             -H "Authorization: Bearer $CURSOR_API_KEY" \
             -H "Content-Type: application/json" \
-            --data @cursor_payload.json)
+            --data @payload.json)
 
-          # 4. Handle Response
+          # 4. Success/Fail handling
           if [[ $RESPONSE == *"\"id\":"* ]]; then
             AGENT_URL=$(echo $RESPONSE | jq -r '.target.url // "https://cursor.com/agents"')
-            gh issue edit $ISSUE_NUM --add-label "awaiting-approval" --remove-label "handed-to-agent" || true
-            gh issue comment $ISSUE_NUM --body "✅ **Success:** Cursor is working! 🔗 [View Work]($AGENT_URL)"
+            gh issue comment $ISSUE_NUM --body "✅ **Sent!** Cursor is working. [View Progress]($AGENT_URL)"
+            # Optional: Remove the trigger label so you can trigger it again later if needed
+            gh issue edit $ISSUE_NUM --remove-label "handed_to-agnt"
           else
-            gh issue comment $ISSUE_NUM --body "❌ **Error:** API rejected request. Response: $RESPONSE"
+            gh issue comment $ISSUE_NUM --body "❌ **Error:** Failed to send to Cursor. Response: $RESPONSE"
             exit 1
           fi
