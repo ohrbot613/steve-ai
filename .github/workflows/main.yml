@@ -5,7 +5,6 @@ on:
 
 jobs:
   send-to-ai:
-    # This condition ensures the code runs ONLY when 'handed-to-agent' is the label added
     if: github.event.label.name == 'handed-to-agent'
     runs-on: ubuntu-latest
     permissions:
@@ -23,16 +22,19 @@ jobs:
           TITLE="${{ github.event.issue.title }}"
           BODY="${{ github.event.issue.body }}"
 
-          # 1. Immediate feedback in the issue
           gh issue comment $ISSUE_NUM --body "🤖 **Agent Triggered:** Sending issue data to Cursor..."
 
-          # 2. Build the JSON for Cursor
+          # 2. Build the JSON - Added the "Closes #Number" instruction
+          # This tells Cursor to include the linking keyword in the PR description.
           jq -n \
             --arg title "$TITLE" \
             --arg body "$BODY" \
             --arg repo "https://github.com/$GH_REPO" \
+            --arg issue_ref "Closes #$ISSUE_NUM" \
             '{
-              prompt: { text: ("Fix this bug. Title: " + $title + " Context: " + $body) },
+              prompt: { 
+                text: ("Fix this bug. Title: " + $title + " Context: " + $body + " IMPORTANT: In your PR description, include the text: " + $issue_ref) 
+              },
               source: { repository: $repo, ref: "main" },
               target: { autoCreatePr: true }
             }' > payload.json
@@ -46,11 +48,9 @@ jobs:
           # 4. Success/Fail handling
           if [[ $RESPONSE == *"\"id\":"* ]]; then
             AGENT_URL=$(echo $RESPONSE | jq -r '.target.url // "https://cursor.com/agents"')
-            gh issue comment $ISSUE_NUM --body "✅ **Sent!** Cursor is now working on a fix. [View Progress]($AGENT_URL)"
-            
-            # Optional: Remove the label so the issue is clean
+            gh issue comment $ISSUE_NUM --body "✅ **Sent!** Cursor is working. When the PR is ready, it will be linked to this issue. [View Progress]($AGENT_URL)"
             gh issue edit $ISSUE_NUM --remove-label "handed-to-agent"
           else
-            gh issue comment $ISSUE_NUM --body "❌ **Error:** Failed to send to Cursor API. Response: $RESPONSE"
+            gh issue comment $ISSUE_NUM --body "❌ **Error:** Failed to send to Cursor. Response: $RESPONSE"
             exit 1
           fi
