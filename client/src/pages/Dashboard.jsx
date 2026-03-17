@@ -292,10 +292,15 @@ export default function Dashboard() {
             <div className={pageStyle.main}>
                 <div className={pageStyle.top}>
                     <h1 style={{ fontSize: "2.4rem", fontWeight: 600, color: "rgb(62, 75, 95)" }}>
-                        Version 2.0 Dashboard
+                        Dashboard
                     </h1>
                     <p style={{ fontSize: "1.5rem", color: "rgb(100, 116, 139)", marginTop: "0.8rem" }}>
-                        Overview of bank balance, reconciliation, and payment run metrics.
+                        Bank balance, reconciliation status, and payment run summary.
+                        {!loading && stats && (
+                            <span style={{ marginLeft: "1.2rem", fontSize: "1.2rem", color: "#9ca3af" }}>
+                                Last updated {new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                            </span>
+                        )}
                     </p>
                 </div>
 
@@ -342,7 +347,7 @@ export default function Dashboard() {
                                 : "—"}
                         </div>
                         <div style={{ fontSize: "1rem", color: "#9ca3af", marginTop: "0.4rem" }}>
-                           100K reserve included
+                            From Xero bank feed
                         </div>
                     </div>
 
@@ -415,7 +420,7 @@ export default function Dashboard() {
                                 fontWeight: 500,
                             }}
                         >
-                            Run payment run →
+                            Payment run →
                         </Link>
                     </div>
 
