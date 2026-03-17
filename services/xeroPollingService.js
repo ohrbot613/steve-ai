@@ -122,37 +122,45 @@ async function fetchNewXeroInvoices(accessToken, tenantId, lastPolledAt) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fuzzy ID matching (replicates upload logic)
+// Exact ID matching
 // ─────────────────────────────────────────────────────────────────────────────
 
-const idNoLetters = (s) => String(s ?? "").replace(/[a-zA-Z]/g, "");
+/**
+ * Normalize an invoice ID to a comparable digit-only string.
+ * Strips all non-digit characters and leading zeros so "INV-001234" and
+ * "PO-1234" both reduce to "1234" and match, while "1234" and "12345" do not.
+ */
+const normalizeInvoiceDigits = (s) => {
+    const digits = String(s ?? "").replace(/[^0-9]/g, "");
+    return digits ? String(parseInt(digits, 10)) : "";
+};
 
 /**
  * Score how well a statement record (fileInv) matches a Xero invoice number.
- * Asymmetric: fileInv has potentialInvoiceIds; xeroInv only has invoiceNumber.
+ * Returns 1.0 only when normalized digit sequences are identical.
+ * This prevents substring false-positives (e.g. "1234" should NOT match "12345").
  */
 function getIdScore(fileInv, xeroInv) {
     const xeroNum = xeroInv.invoiceNumber ?? "";
     if (!xeroNum) return 0;
-    const xeroDigits = idNoLetters(xeroNum);
+    const xeroNorm = normalizeInvoiceDigits(xeroNum);
+    if (!xeroNorm) return 0;
 
     const potentialIds =
         Array.isArray(fileInv.potentialInvoiceIds) && fileInv.potentialInvoiceIds.length > 0
             ? fileInv.potentialInvoiceIds
-            : [fileInv.invoiceNumber, fileInv.referenceId, fileInv.id].filter(Boolean);
+            : [fileInv.invoiceNumber].filter(Boolean);
 
     if (potentialIds.length === 0) return 0;
 
-    let best = 0;
     for (const pid of potentialIds) {
         const p = String(pid).trim();
         if (!p) continue;
-        const pDigits = idNoLetters(p);
-        const sim = nameSimilarity(pDigits || p, xeroDigits || xeroNum);
-        if (sim > best) best = sim;
+        const pNorm = normalizeInvoiceDigits(p);
+        if (pNorm && pNorm === xeroNorm) return 1.0;
     }
 
-    return Math.round(best * 1e6) / 1e6;
+    return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

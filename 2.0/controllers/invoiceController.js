@@ -872,25 +872,29 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
         isDeleted: { $ne: true },
     }).lean();
 
-    // Score only by ID: each file invoice has multiple potential IDs; best match vs each Xero invoice wins
-    const idNoLetters = (s) => String(s ?? "").replace(/[a-zA-Z]/g, "");
+    // Score only by ID: exact normalized digit match prevents substring false-positives.
+    // "INV-1234" and "PO-1234" → both normalize to "1234" → match.
+    // "1234" vs "12345" → "1234" ≠ "12345" → no match.
+    const normalizeInvoiceDigits = (s) => {
+        const digits = String(s ?? "").replace(/[^0-9]/g, "");
+        return digits ? String(parseInt(digits, 10)) : "";
+    };
     const getIdScore = (fileInv, xeroInv) => {
         const xeroNum = xeroInv.invoiceNumber ?? "";
         if (!xeroNum) return 0;
-        const xeroDigits = idNoLetters(xeroNum);
+        const xeroNorm = normalizeInvoiceDigits(xeroNum);
+        if (!xeroNorm) return 0;
         const potentialIds = Array.isArray(fileInv.potentialInvoiceIds) && fileInv.potentialInvoiceIds.length > 0
             ? fileInv.potentialInvoiceIds
-            : [fileInv.invoiceNumber, fileInv.referenceId, fileInv.id].filter(Boolean);
+            : [fileInv.invoiceNumber].filter(Boolean);
         if (potentialIds.length === 0) return 0;
-        let best = 0;
         for (const pid of potentialIds) {
             const p = String(pid).trim();
             if (!p) continue;
-            const pDigits = idNoLetters(p);
-            const sim = nameSimilarity(pDigits || p, xeroDigits || xeroNum);
-            if (sim > best) best = sim;
+            const pNorm = normalizeInvoiceDigits(p);
+            if (pNorm && pNorm === xeroNorm) return 1.0;
         }
-        return Math.round(best * 10 ** 6) / 10 ** 6;
+        return 0;
     };
 
     const MATCH_THRESHOLD = 0.8;
