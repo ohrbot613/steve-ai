@@ -1,10 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node /Users/issacbrown/.claude/get-shit-done/bin/gsd-tools.js phase add:*)",
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "WebFetch",
       "WebSearch",
-      "Skill(gsd:execute-phase)",
-      "Skill(gsd:plan-phase)"
+      "NotebookEdit",
+      "Agent",
+      "TodoWrite",
+      "Skill",
+      "mcp__*"
     ]
   }
 }

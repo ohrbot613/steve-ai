@@ -9,9 +9,10 @@ const Invoices = SupplierInvoice;
 
 exports.getAllLogs = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
-    const sortBy = req.query.sortBy || 'processDateTime';
-    const sortOrder = req.query.sortOrder || 'desc';
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
+    const allowedSortFields = ['supplier', 'statementIssueDate', 'processDateTime', 'status', 'reconciled', 'unreconciled', 'total'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'processDateTime';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
     const offset = (page - 1) * limit;
 
     // Map frontend sort fields to database fields
@@ -20,9 +21,9 @@ exports.getAllLogs = tryCatchAsync(async (req, res) => {
         'statementIssueDate': 'invoiceIssueDate',
         'processDateTime': 'addedAt',
         'status': 'status',
-        'reconciled': 'reconciled', 
+        'reconciled': 'reconciled',
         'unreconciled': 'unreconciled',
-        'total': 'total'  
+        'total': 'total'
     };
 
     const dbSortField = sortFieldMap[sortBy] || 'addedAt';
@@ -226,10 +227,11 @@ exports.getAllLogs = tryCatchAsync(async (req, res) => {
 
 exports.getLogs = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
     const id = req.query.id;
-    const sortBy = req.query.sortBy || 'processDateTime';
-    const sortOrder = req.query.sortOrder || 'desc';
+    const allowedSortFields = ['statementIssueDate', 'processDateTime', 'status', 'reconciled', 'unreconciled', 'total'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'processDateTime';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
     const offset = (page - 1) * limit;
 
     // Map frontend sort fields to database fields
@@ -237,9 +239,9 @@ exports.getLogs = tryCatchAsync(async (req, res) => {
         'statementIssueDate': 'invoiceIssueDate',
         'processDateTime': 'addedAt',
         'status': 'status',
-        'reconciled': 'reconciled', 
+        'reconciled': 'reconciled',
         'unreconciled': 'unreconciled',
-        'total': 'total'  
+        'total': 'total'
     };
 
     const dbSortField = sortFieldMap[sortBy] || 'addedAt';
@@ -426,10 +428,10 @@ exports.getLogs = tryCatchAsync(async (req, res) => {
 exports.deleteLog = tryCatchAsync(async (req, res) => {
     const logId = req.params.id;
 
-    if (!logId) {
+    if (!logId || !mongoose.Types.ObjectId.isValid(logId)) {
         return res.status(400).json({
             success: false,
-            message: 'Log ID is required'
+            message: 'Valid Log ID is required'
         });
     }
 
@@ -458,10 +460,10 @@ exports.deleteLog = tryCatchAsync(async (req, res) => {
 exports.getNewerLog = tryCatchAsync(async (req, res) => {
     const logId = req.query.logId;
 
-    if (!logId) {
+    if (!logId || !mongoose.Types.ObjectId.isValid(logId)) {
         return res.status(400).json({
             success: false,
-            message: 'Log ID is required'
+            message: 'Valid Log ID is required'
         });
     }
 
@@ -484,7 +486,7 @@ exports.getNewerLog = tryCatchAsync(async (req, res) => {
 
 exports.getAllActivities = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
     const offset = (page - 1) * limit;
 
     // Get all processes sorted by createdAt (most recent first)

@@ -1,4 +1,5 @@
 const { tryCatchAsync } = require("./ErrorController");
+const mongoose = require("mongoose");
 const Vendor = require("../modals/vendorModal");
 const SupplierInvoice = require("../modals/supplierInvoiceModal");
 
@@ -10,8 +11,8 @@ const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 exports.getSuppliers = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
-    const search = typeof req.query.search === 'string' ? req.query.search : '';
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
+    const search = typeof req.query.search === 'string' ? req.query.search.slice(0, 200) : '';
     const offset = (page - 1) * limit;
 
     const matchStage = search
@@ -86,17 +87,19 @@ exports.getSuppliers = tryCatchAsync(async (req, res) => {
 
 exports.getInvoicesBySupplier = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
     const supplierId = req.query.supplierId;
-    const sortBy = req.query.sortBy || 'addedAt';
-    const sortOrder = req.query.sortOrder || 'desc';
-    const paymentFilter = req.query.paymentFilter || 'all'; // 'all', 'paid', 'unpaid'
+    const allowedSortFields = ['invoiceNumber', 'supplierDate', 'xeroDate', 'supplierAmount', 'xeroAmount', 'addedAt', 'paymentStatus', 'difference', 'foundInXero', 'status'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'addedAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
+    const allowedPaymentFilters = ['all', 'paid', 'unpaid'];
+    const paymentFilter = allowedPaymentFilters.includes(req.query.paymentFilter) ? req.query.paymentFilter : 'all';
     const offset = (page - 1) * limit;
 
-    if (!supplierId) {
+    if (!supplierId || !mongoose.Types.ObjectId.isValid(supplierId)) {
         return res.status(400).json({
             success: false,
-            message: 'Supplier ID is required'
+            message: 'Valid Supplier ID is required'
         });
     }
 
@@ -167,8 +170,6 @@ exports.getInvoicesBySupplier = tryCatchAsync(async (req, res) => {
         .populate('vendorId')
         .populate('statementId');
 
-        console.log(invoices)
-
     // Sort in-memory for computed fields
     if (sortBy === 'difference') {
         invoices.sort((a, b) => {
@@ -217,17 +218,19 @@ exports.getInvoicesBySupplier = tryCatchAsync(async (req, res) => {
 
 exports.getMissedInvoices = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
     const supplierId = req.query.supplierId;
-    const sortBy = req.query.sortBy || 'addedAt';
-    const sortOrder = req.query.sortOrder || 'desc';
-    const paymentFilter = req.query.paymentFilter || 'all'; // 'all', 'paid', 'unpaid'
+    const allowedSortFields = ['invoiceNumber', 'supplierDate', 'xeroDate', 'supplierAmount', 'xeroAmount', 'addedAt', 'paymentStatus', 'difference', 'foundInXero'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'addedAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
+    const allowedPaymentFilters = ['all', 'paid', 'unpaid'];
+    const paymentFilter = allowedPaymentFilters.includes(req.query.paymentFilter) ? req.query.paymentFilter : 'all';
     const offset = (page - 1) * limit;
 
-    if (!supplierId) {
+    if (!supplierId || !mongoose.Types.ObjectId.isValid(supplierId)) {
         return res.status(400).json({
             success: false,
-            message: 'Supplier ID is required'
+            message: 'Valid Supplier ID is required'
         });
     }
 
@@ -322,17 +325,19 @@ exports.getMissedInvoices = tryCatchAsync(async (req, res) => {
 
 exports.getUnmatchedInvoices = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
     const supplierId = req.query.supplierId;
-    const sortBy = req.query.sortBy || 'addedAt';
-    const sortOrder = req.query.sortOrder || 'desc';
-    const paymentFilter = req.query.paymentFilter || 'all'; // 'all', 'paid', 'unpaid'
+    const allowedSortFields = ['invoiceNumber', 'supplierDate', 'xeroDate', 'supplierAmount', 'xeroAmount', 'addedAt', 'paymentStatus', 'difference', 'foundInXero', 'status'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'addedAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
+    const allowedPaymentFilters = ['all', 'paid', 'unpaid'];
+    const paymentFilter = allowedPaymentFilters.includes(req.query.paymentFilter) ? req.query.paymentFilter : 'all';
     const offset = (page - 1) * limit;
 
-    if (!supplierId) {
+    if (!supplierId || !mongoose.Types.ObjectId.isValid(supplierId)) {
         return res.status(400).json({
             success: false,
-            message: 'Supplier ID is required'
+            message: 'Valid Supplier ID is required'
         });
     }
 
@@ -424,17 +429,19 @@ exports.getUnmatchedInvoices = tryCatchAsync(async (req, res) => {
 
 exports.getMatchedInvoices = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
     const supplierId = req.query.supplierId;
-    const sortBy = req.query.sortBy || 'addedAt';
-    const sortOrder = req.query.sortOrder || 'desc';
-    const paymentFilter = req.query.paymentFilter || 'all'; // 'all', 'paid', 'unpaid'
+    const allowedSortFields = ['invoiceNumber', 'supplierDate', 'xeroDate', 'supplierAmount', 'xeroAmount', 'addedAt', 'paymentStatus', 'difference', 'foundInXero', 'status'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'addedAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
+    const allowedPaymentFilters = ['all', 'paid', 'unpaid'];
+    const paymentFilter = allowedPaymentFilters.includes(req.query.paymentFilter) ? req.query.paymentFilter : 'all';
     const offset = (page - 1) * limit;
 
-    if (!supplierId) {
+    if (!supplierId || !mongoose.Types.ObjectId.isValid(supplierId)) {
         return res.status(400).json({
             success: false,
-            message: 'Supplier ID is required'
+            message: 'Valid Supplier ID is required'
         });
     }
 

@@ -129,11 +129,19 @@ exports.handleMulterError = async (err, req, res, next) => {
 
 exports.getInvoices = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
     const id = req.query.id;
-    const sortBy = req.query.sortBy || 'systemDate';
-    const sortOrder = req.query.sortOrder || 'asc';
-    const paymentFilter = req.query.paymentFilter || 'all'; // 'all', 'paid', 'unpaid'
+
+    // Validate ObjectId to prevent NoSQL injection
+    if (id && !mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ success: false, message: 'Invalid statement ID' });
+    }
+
+    const allowedSortFields = ['referenceId', 'supplierDate', 'systemDate', 'supplierAmount', 'systemAmount', 'paymentStatus', 'foundInSystem', 'status'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'systemDate';
+    const sortOrder = req.query.sortOrder === 'desc' ? 'desc' : 'asc';
+    const allowedPaymentFilters = ['all', 'paid', 'unpaid'];
+    const paymentFilter = allowedPaymentFilters.includes(req.query.paymentFilter) ? req.query.paymentFilter : 'all';
     const offset = (page - 1) * limit;
 
     // Map frontend sort fields to database fields
@@ -239,11 +247,15 @@ exports.getInvoices = tryCatchAsync(async (req, res) => {
 
 exports.getAllInvoices = tryCatchAsync(async (req, res) => {
     const limit = 50;
-    const page = Number(req.query.page) || 1;
-    const sortBy = req.query.sortBy || 'addedAt';
-    const sortOrder = req.query.sortOrder || 'desc';
-    const filter = req.query.filter || 'all'; // 'all', 'matched', 'missed' (amounts don't match), 'unmatched' (not found in Xero)
-    const paymentFilter = req.query.paymentFilter || 'all'; // 'all', 'paid', 'unpaid'
+    const page = Math.max(1, Math.min(Number(req.query.page) || 1, 1000));
+
+    const allowedSortFields = ['invoiceNumber', 'supplierDate', 'xeroDate', 'supplierAmount', 'xeroAmount', 'addedAt', 'paymentStatus', 'supplier', 'difference', 'foundInXero', 'status'];
+    const sortBy = allowedSortFields.includes(req.query.sortBy) ? req.query.sortBy : 'addedAt';
+    const sortOrder = req.query.sortOrder === 'asc' ? 'asc' : 'desc';
+    const allowedFilters = ['all', 'matched', 'missed', 'unmatched'];
+    const filter = allowedFilters.includes(req.query.filter) ? req.query.filter : 'all';
+    const allowedPaymentFilters = ['all', 'paid', 'unpaid'];
+    const paymentFilter = allowedPaymentFilters.includes(req.query.paymentFilter) ? req.query.paymentFilter : 'all';
     const offset = (page - 1) * limit;
 
     // Map frontend sort fields to database fields
@@ -435,10 +447,10 @@ exports.getAllInvoices = tryCatchAsync(async (req, res) => {
 exports.deleteInvoice = tryCatchAsync(async (req, res) => {
     const invoiceId = req.params.id;
 
-    if (!invoiceId) {
+    if (!invoiceId || !mongoose.Types.ObjectId.isValid(invoiceId)) {
         return res.status(400).json({
             success: false,
-            message: 'Invoice ID is required'
+            message: 'Valid Invoice ID is required'
         });
     }
 

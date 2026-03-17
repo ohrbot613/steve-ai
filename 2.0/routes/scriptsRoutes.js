@@ -5,6 +5,9 @@ const Team = require("../modals/teamModal");
 const { getAllVenders, getAllInvoices, getBankBalance, searchSimilarNames, findInvoiceById, getOneSupplier, getOneRandomSupplierDetails, getSupplierByName, paymentRunInvoice } = require("../scripts/scripts");
 const authController = require("../../controllers/AuthController");
 
+// All script routes require authentication
+router.use(authController.protect);
+
 router.get(
     "/reloading-status",
     tryCatchAsync(async (req, res) => {
@@ -16,9 +19,6 @@ router.get(
         return res.status(200).json({ success: true, reloading: Boolean(team?.reloading) });
     })
 );
-
-// All script routes require authentication
-router.use(authController.protect);
 
 // router.get("/connect-xero", connectXero);
 router.post("/get-all-vendors", authController.xeroClient, authController.xeroTokenInfo, getAllVenders);

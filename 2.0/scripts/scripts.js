@@ -485,7 +485,7 @@ exports.getAllInvoices = tryCatchAsync(async (req, res) => {
                 body = result.body;
                 break;
             } catch (err) {
-                console.log("err", err);
+                if (process.env.NODE_ENV !== 'production') console.error("Xero API error:", err?.message);
                 const status = err?.statusCode ?? err?.response?.statusCode;
                 const retryAfter = parseInt(err?.headers?.["retry-after"] ?? err?.response?.headers?.["retry-after"], 10) || 6;
                 if (status === 429 && retries < maxRetries) {
@@ -567,13 +567,11 @@ exports.syncIncrementalInvoicesFromXero = async function syncIncrementalInvoices
     if (!teamTenantId) return { success: false, skipped: true, reason: "no_tenant" };
     const team = await Team.findOne({ tenantId: teamTenantId }).lean();
     if (!team) return { success: false, skipped: true, reason: "team_not_found" };
-console.log('team.updateInXeroInProgress', team.updateInXeroInProgress)
     if (team.updateInXeroInProgress) return { success: false, skipped: true, reason: "in_progress" };
 
     const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
     const lastLookupMs = team.lastXeroLookup ? new Date(team.lastXeroLookup).getTime() : 0;
     const isWithinLast30Min = lastLookupMs >= thirtyMinAgo;
-console.log('isWithinLast30Min', isWithinLast30Min)
     if (!force && isWithinLast30Min) return { success: true, skipped: true, reason: "within_30_min" };
     if (!req.xeroAccessToken || !req.xeroTenantId) return { success: false, skipped: true, reason: "missing_xero_auth" };
 
