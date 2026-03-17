@@ -14,6 +14,9 @@ const XeroTenants = require("../modals/xeroTenantsModal");
 const Suppliers = Vendor;
 const Invoices = SupplierInvoice;
 
+// Escape special regex characters to prevent ReDoS and regex injection
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // Load tool configuration
 const toolsConfigPath = path.join(__dirname, "../config/agentTools.json");
 const toolsConfig = JSON.parse(fs.readFileSync(toolsConfigPath, "utf8"));
@@ -99,7 +102,7 @@ const toolImplementations = {
       const query = { isDeleted: { $ne: true } };
       if (supplierId) query.supplier = supplierId;
       if (logId) query.log = logId;
-      if (invoiceNumber) query.invoiceNumber = { $regex: invoiceNumber, $options: 'i' };
+      if (invoiceNumber) query.invoiceNumber = { $regex: escapeRegex(invoiceNumber), $options: 'i' };
       if (paymentStatus) query.paymentStatus = paymentStatus;
 
       const skip = (page - 1) * Math.min(limit, 20);
@@ -157,7 +160,7 @@ const toolImplementations = {
       }
 
       const query = {};
-      if (search) query.name = { $regex: search, $options: 'i' };
+      if (search) query.name = { $regex: escapeRegex(search), $options: 'i' };
 
       const skip = (page - 1) * Math.min(limit, 20);
       const suppliers = await Suppliers.find(query)

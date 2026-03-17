@@ -5,6 +5,9 @@ const Invoice = require("../modals/invoiceModal");
 const Vendor = require("../modals/vendorModal");
 const { searchSimilarVendors } = require("../scripts/scripts");
 
+// Escape special regex characters to prevent ReDoS and regex injection
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // ---------------------------------------------------------------------------
 // Schema summary: introspect Mongoose models so the agent understands fields and relationships
 // ---------------------------------------------------------------------------
@@ -170,7 +173,7 @@ const queryInvoicesTool = new DynamicStructuredTool({
     if (vendorName && !contactId) {
       try {
         const vendor = await Vendor.findOne({
-          name: { $regex: vendorName, $options: "i" },
+          name: { $regex: escapeRegex(vendorName), $options: "i" },
           isDeleted: { $ne: true },
         }).lean();
         if (vendor && vendor.xeroId) {
@@ -218,7 +221,7 @@ const queryVendorsTool = new DynamicStructuredTool({
     const { name, xeroId } = params;
     const filter = {};
 
-    if (name) filter.name = { $regex: name, $options: "i" };
+    if (name) filter.name = { $regex: escapeRegex(name), $options: "i" };
     if (xeroId) filter.xeroId = xeroId;
 
     return paginatedQuery(Vendor, filter, "createdAt", "query_vendors", params);

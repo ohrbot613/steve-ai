@@ -24,7 +24,7 @@ exports.protect = tryCatchAsync(async (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        const user = await User.findById(decoded.userId)
+        const user = await User.findById(decoded.userId).select('-resetToken -resetTokenTTL')
         
         if (!user) {
             // User not found in database
@@ -188,9 +188,11 @@ exports.registerXeroCallback = tryCatchAsync(async (req, res) => {
 })
 
 exports.checkXeroStatus = tryCatchAsync(async (req, res) => {
-  // Get Xero tenant (use first available tenant, or implement tenant selection logic)
-  const xeroTenant = await XeroTenants.findOne().lean();
-  
+  // Only fetch the fields we need — never load tokens into memory for a status check
+  const xeroTenant = await XeroTenants.findOne()
+    .select('tenantId tenantName authData.refreshToken')
+    .lean();
+
   if (!xeroTenant?.authData?.refreshToken) {
     return res.status(200).json({ 
       connected: false,
