@@ -188,7 +188,7 @@ async function matchAndReconcile(xeroInvoices) {
             {
                 $set: {
                     invoiceNumber: xeroInv.InvoiceNumber,
-                    amount: xeroInv.SubTotal || xeroInv.Total || null,
+                    amount: xeroInv.Total || xeroInv.SubTotal || null,
                     status: xeroInv.Status === "PAID" ? "paid" : "unpaid",
                     currency: xeroInv.CurrencyCode || null,
                     date: xeroInv.DateString ? new Date(xeroInv.DateString) : null,
