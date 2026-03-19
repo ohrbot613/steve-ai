@@ -61,12 +61,13 @@ async function reconcileClient(supabase, clientId) {
   if (txErr) throw new Error(`Fetch transactions failed: ${txErr.message}`);
   if (!transactions?.length) return { exactMatches, semanticMatches, unmatched };
 
-  // Fetch all invoices for this client
+  // Fetch all invoices for this client (unpaid + paid — REC-122)
+  // Including paid invoices prevents false "Unmatched" for invoices settled before statement upload.
   const { data: invoices, error: invErr } = await supabase
     .from("invoices")
     .select("id, invoice_number, contact_name, amount, status, embedding")
     .eq("client_id", clientId)
-    .eq("status", "unpaid");
+    .in("status", ["unpaid", "paid"]);
 
   if (invErr) throw new Error(`Fetch invoices failed: ${invErr.message}`);
   if (!invoices?.length) {
@@ -90,16 +91,55 @@ async function reconcileClient(supabase, clientId) {
     }
 
     if (bestScore >= 0.8 && bestInvoice) {
-      reconciliationRows.push({
-        client_id: clientId,
-        bank_transaction_id: tx.id,
-        invoice_id: bestInvoice.id,
-        match_type: "exact_id",
-        confidence: bestScore,
-        match_reason: `Exact digit match: ${bestInvoice.invoice_number}`,
-      });
-      exactMatches++;
-      continue;
+      // REC-120: Amount-mismatch guard
+      // Only apply when both amounts are known.
+      const txAmount = parseFloat(tx.amount);
+      const invAmount = parseFloat(bestInvoice.amount);
+      const amountsKnown = !isNaN(txAmount) && txAmount !== 0 && !isNaN(invAmount) && invAmount !== 0;
+
+      if (amountsKnown) {
+        const diff = Math.abs(txAmount - invAmount) / Math.abs(invAmount);
+
+        if (diff > 0.5) {
+          // >50% difference: reject the ID match entirely, fall through to semantic
+        } else if (diff > 0.1) {
+          // 10–50% difference: downgrade to semantic (needs review)
+          reconciliationRows.push({
+            client_id: clientId,
+            bank_transaction_id: tx.id,
+            invoice_id: bestInvoice.id,
+            match_type: "semantic",
+            confidence: Math.round(bestScore * 0.7 * 100) / 100,
+            match_reason: `ID matched (${bestInvoice.invoice_number}) but amount differs by ${(diff * 100).toFixed(1)}% — tx: ${txAmount}, inv: ${invAmount}`,
+          });
+          semanticMatches++;
+          continue;
+        } else {
+          // ≤10% difference: accept as exact
+          reconciliationRows.push({
+            client_id: clientId,
+            bank_transaction_id: tx.id,
+            invoice_id: bestInvoice.id,
+            match_type: "exact_id",
+            confidence: bestScore,
+            match_reason: `Exact digit match: ${bestInvoice.invoice_number}`,
+          });
+          exactMatches++;
+          continue;
+        }
+      } else {
+        // Amounts not available — proceed as exact match (original behaviour)
+        reconciliationRows.push({
+          client_id: clientId,
+          bank_transaction_id: tx.id,
+          invoice_id: bestInvoice.id,
+          match_type: "exact_id",
+          confidence: bestScore,
+          match_reason: `Exact digit match: ${bestInvoice.invoice_number}`,
+        });
+        exactMatches++;
+        continue;
+      }
     }
 
     // Step 2: Semantic match via pgvector

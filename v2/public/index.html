@@ -286,6 +286,7 @@
     .badge-review { background: var(--review); color: var(--review-text); }
     .badge-semantic { background: #1e3a5f; color: #93c5fd; }
     .badge-overridden { background: #3b2c00; color: #fbbf24; }
+    .badge-paid { background: #1a2e1a; color: #86efac; border: 1px solid #166534; margin-left: 4px; font-size: 0.7rem; vertical-align: middle; } /* REC-122 */
 
     /* ── Confidence bar — taller for readability ── */
     .confidence-bar {
@@ -449,6 +450,8 @@
       .stat-card .value { font-size: 1.4rem; }
     }
   </style>
+  <!-- SheetJS: client-side Excel (.xlsx/.xls) → CSV conversion (REC-121) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -840,6 +843,10 @@
         const parseData = await parseRes.json();
         if (!parseRes.ok) throw new Error(parseData.error || 'PDF parsing failed');
         text = parseData.text;
+      } else if (/\.xlsx?$/i.test(file.name)) {
+        // REC-121: Excel files are ZIP archives — readAsText() produces binary garbage.
+        // Use SheetJS to convert to CSV first, then hand the CSV text to Claude.
+        text = await readExcelAsCSV(file);
       } else {
         text = await readFileAsText(file);
       }
@@ -893,6 +900,31 @@
       reader.onload = (e) => resolve(e.target.result);
       reader.onerror = () => reject(new Error('Could not read file. Please try again.'));
       reader.readAsText(file);
+    });
+  }
+
+  // REC-121: Convert Excel (.xlsx/.xls) to CSV text using SheetJS.
+  // Reads all sheets, concatenates them with a sheet-name header so Claude
+  // can see the full file content rather than binary garbage.
+  function readExcelAsCSV(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const csvParts = workbook.SheetNames.map((name) => {
+            const ws = workbook.Sheets[name];
+            const csv = XLSX.utils.sheet_to_csv(ws, { blankrows: false });
+            return `=== Sheet: ${name} ===\n${csv}`;
+          });
+          resolve(csvParts.join('\n\n'));
+        } catch (err) {
+          reject(new Error('Could not parse Excel file: ' + err.message));
+        }
+      };
+      reader.onerror = () => reject(new Error('Could not read file. Please try again.'));
+      reader.readAsArrayBuffer(file);
     });
   }
 
@@ -950,13 +982,20 @@
             <button class="btn-override" onclick="overrideMatch('${r.id}', this)">✗ Override</button>
            </div>`
         : '';
+      // REC-122: flag invoices that were already paid so Jeffrey can see why
+      // they appear reconciled even though payment was recorded beforehand.
+      const alreadyPaid = r.invoice?.status === 'paid';
+      const paidTag = alreadyPaid
+        ? ' <span class="badge badge-paid" title="This invoice was already marked paid in Xero">Already paid</span>'
+        : '';
+
       const status = r.overridden_by_user
-        ? `<span class="badge badge-overridden" title="${escapeHtml(r.override_note || '')}">Overridden</span>`
+        ? `<span class="badge badge-overridden" title="${escapeHtml(r.override_note || '')}">Overridden</span>${paidTag}`
         : r.match_type === 'unmatched'
         ? '<span class="badge badge-unmatched">No match</span>'
         : r.match_type === 'semantic'
-        ? '<span class="badge badge-review">Needs review</span>'
-        : '<span class="badge badge-matched">Reconciled</span>';
+        ? `<span class="badge badge-review">Needs review</span>${paidTag}`
+        : `<span class="badge badge-matched">Reconciled</span>${paidTag}`;
 
       const confidence = (r.confidence !== null && r.confidence !== undefined)
         ? (() => {
