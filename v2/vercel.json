@@ -20,6 +20,8 @@
     "ANTHROPIC_API_KEY": "@anthropic_api_key",
     "XERO_CLIENT_ID": "@xero_client_id",
     "XERO_CLIENT_SECRET": "@xero_client_secret",
+    "XERO_REDIRECT_URI": "@xero_redirect_uri",
+    "NEXT_PUBLIC_APP_URL": "@next_public_app_url",
     "CRON_SECRET": "@cron_secret"
   }
 }

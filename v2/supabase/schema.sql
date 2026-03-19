@@ -25,6 +25,9 @@ create table if not exists clients (
   xero_scope text,
   xero_connected_at timestamptz,
   xero_last_polled_at timestamptz,
+  -- OAuth CSRF state (short-lived, cleared after callback)
+  xero_oauth_state text,
+  xero_oauth_state_expires_at timestamptz,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
