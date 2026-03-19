@@ -549,17 +549,17 @@
     <div class="stat-card matched">
       <div class="label">Matched</div>
       <div class="value" id="stat-matched">—</div>
-      <div class="sublabel">exact invoice ID</div>
+      <div class="sublabel" id="stat-matched-amount">exact invoice ID</div>
     </div>
     <div class="stat-card unmatched">
       <div class="label">Unmatched</div>
       <div class="value" id="stat-unmatched">—</div>
-      <div class="sublabel">no invoice found</div>
+      <div class="sublabel" id="stat-unmatched-amount">no invoice found</div>
     </div>
     <div class="stat-card review">
       <div class="label">Needs review</div>
       <div class="value" id="stat-review">—</div>
-      <div class="sublabel">semantic match, verify manually</div>
+      <div class="sublabel" id="stat-review-amount">semantic match, verify manually</div>
     </div>
   </div>
 
@@ -594,7 +594,6 @@
           <th>Amount</th>
           <th>Date</th>
           <th>Matched invoice</th>
-          <th>Match type</th>
           <th>Confidence</th>
           <th>Status</th>
         </tr>
@@ -952,6 +951,22 @@
       document.getElementById('stat-matched').textContent = stats.matched ?? 0;
       document.getElementById('stat-unmatched').textContent = stats.unmatched ?? 0;
       document.getElementById('stat-review').textContent = stats.review ?? 0;
+
+      // Compute monetary totals from reconciliations
+      const currency = reconciliations[0]?.bank_transaction?.currency || 'GBP';
+      const matchedAmt = reconciliations
+        .filter(r => r.match_type === 'exact_id' && !r.overridden_by_user)
+        .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
+      const unmatchedAmt = reconciliations
+        .filter(r => r.match_type === 'unmatched')
+        .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
+      const reviewAmt = reconciliations
+        .filter(r => r.match_type === 'semantic' || r.match_type === 'needs_review')
+        .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
+
+      document.getElementById('stat-matched-amount').textContent = formatCurrency(matchedAmt, currency);
+      document.getElementById('stat-unmatched-amount').textContent = formatCurrency(unmatchedAmt, currency);
+      document.getElementById('stat-review-amount').textContent = formatCurrency(reviewAmt, currency);
     } else {
       document.getElementById('stats-row').style.display = 'none';
     }
@@ -1045,7 +1060,6 @@
         <td style="white-space:nowrap">${amt}${invoiceAmtNote}</td>
         <td style="white-space:nowrap">${date}</td>
         <td>${invoice}${matchReason}</td>
-        <td>${matchBadge}</td>
         <td>${confidence}</td>
         <td>${status}${reviewActions}</td>
       </tr>`;
