@@ -1,0 +1,18 @@
+{
+  "name": "steve-v2",
+  "version": "2.0.0",
+  "description": "Steve AI — Invoice reconciliation. Vercel + Supabase + Claude API.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.1",
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "vercel": "^33.0.0"
+  }
+}

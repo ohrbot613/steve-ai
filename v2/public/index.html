@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Steve — Invoice Reconciliation</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3e;
+      --accent: #6366f1;
+      --accent-light: #818cf8;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --error: #ef4444;
+      --matched: #166534;
+      --matched-text: #86efac;
+      --unmatched: #7f1d1d;
+      --unmatched-text: #fca5a5;
+      --review: #1e3a5f;
+      --review-text: #93c5fd;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Layout ── */
+    header {
+      padding: 16px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo { font-size: 1.25rem; font-weight: 700; letter-spacing: -0.5px; }
+    .logo span { color: var(--accent-light); }
+
+    .user-info { display: flex; align-items: center; gap: 12px; }
+    .user-info span { font-size: 0.875rem; color: var(--muted); }
+    .btn-link { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.875rem; }
+    .btn-link:hover { color: var(--text); }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+
+    /* ── Auth ── */
+    #auth-view {
+      max-width: 360px;
+      margin: 80px auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+    }
+
+    #auth-view h2 { margin-bottom: 4px; }
+    #auth-view p { color: var(--muted); font-size: 0.875rem; margin-bottom: 24px; }
+
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; font-size: 0.8125rem; color: var(--muted); margin-bottom: 6px; }
+
+    input[type="email"], input[type="password"], input[type="text"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text);
+      font-size: 0.9375rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: var(--accent); }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 0.9375rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s, background 0.15s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; width: 100%; margin-top: 8px; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-light); }
+    .btn-secondary { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+    .btn-secondary:hover:not(:disabled) { border-color: var(--accent); }
+    .btn-danger { background: var(--error); color: #fff; }
+
+    .error-msg { color: var(--error); font-size: 0.8125rem; margin-top: 12px; text-align: center; }
+    .auth-toggle { text-align: center; margin-top: 16px; font-size: 0.875rem; color: var(--muted); }
+    .auth-toggle a { color: var(--accent-light); cursor: pointer; text-decoration: underline; }
+
+    /* ── App ── */
+    #app-view { display: none; }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .section-header h2 { font-size: 1.125rem; font-weight: 600; }
+
+    /* ── Upload zone ── */
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 40px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      margin-bottom: 32px;
+    }
+    .upload-zone:hover, .upload-zone.dragging { border-color: var(--accent); }
+    .upload-zone p { color: var(--muted); font-size: 0.9375rem; margin-top: 8px; }
+    .upload-zone .icon { font-size: 2rem; }
+
+    /* ── Stats ── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .stat-card .label { font-size: 0.8125rem; color: var(--muted); margin-bottom: 8px; }
+    .stat-card .value { font-size: 1.75rem; font-weight: 700; }
+    .stat-card.matched .value { color: var(--success); }
+    .stat-card.unmatched .value { color: var(--error); }
+    .stat-card.review .value { color: var(--warning); }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      padding: 12px 16px;
+      font-size: 0.8125rem;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 12px 16px;
+      font-size: 0.875rem;
+      border-bottom: 1px solid var(--border);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(99,102,241,0.04); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    .badge-matched { background: var(--matched); color: var(--matched-text); }
+    .badge-unmatched { background: var(--unmatched); color: var(--unmatched-text); }
+    .badge-review { background: var(--review); color: var(--review-text); }
+    .badge-semantic { background: #1e3a5f; color: #93c5fd; }
+
+    .confidence-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .bar-track {
+      flex: 1;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: var(--success);
+    }
+    .bar-fill.low { background: var(--warning); }
+    .bar-fill.very-low { background: var(--error); }
+
+    .amount { font-variant-numeric: tabular-nums; }
+
+    /* ── Status overlay ── */
+    #status-bar {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 0.875rem;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    #status-bar.visible { display: flex; }
+
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent-light);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Empty state ── */
+    .empty-state { text-align: center; padding: 48px; color: var(--muted); }
+    .empty-state p { margin-top: 8px; font-size: 0.9375rem; }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      main { padding: 16px; }
+      .stats-row { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Steve <span>AI</span></div>
+  <div class="user-info" id="header-user" style="display:none">
+    <span id="header-email"></span>
+    <button class="btn-link" onclick="signOut()">Sign out</button>
+  </div>
+</header>
+
+<!-- ── Auth ── -->
+<div id="auth-view">
+  <h2 id="auth-title">Sign in</h2>
+  <p id="auth-subtitle">Invoice reconciliation for CFOs</p>
+
+  <div class="form-group">
+    <label>Email</label>
+    <input type="email" id="auth-email" placeholder="you@company.com" />
+  </div>
+  <div class="form-group">
+    <label>Password</label>
+    <input type="password" id="auth-password" placeholder="••••••••" />
+  </div>
+
+  <button class="btn btn-primary" id="auth-btn" onclick="handleAuth()">Sign in</button>
+  <p class="error-msg" id="auth-error"></p>
+  <p class="auth-toggle">
+    <span id="auth-toggle-text">Don't have an account?</span>
+    <a onclick="toggleAuthMode()">Sign up</a>
+  </p>
+</div>
+
+<!-- ── App ── -->
+<main id="app-view">
+  <!-- Upload -->
+  <div
+    class="upload-zone"
+    id="upload-zone"
+    onclick="document.getElementById('file-input').click()"
+    ondragover="event.preventDefault(); this.classList.add('dragging')"
+    ondragleave="this.classList.remove('dragging')"
+    ondrop="handleDrop(event)"
+  >
+    <div class="icon">📄</div>
+    <strong>Upload bank statement</strong>
+    <p>PDF or Excel (.xlsx) — drag and drop or click to browse</p>
+    <input type="file" id="file-input" accept=".pdf,.xlsx" style="display:none" onchange="handleFileSelect(event)" />
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-row" id="stats-row" style="display:none">
+    <div class="stat-card"><div class="label">Total transactions</div><div class="value" id="stat-total">—</div></div>
+    <div class="stat-card matched"><div class="label">Matched</div><div class="value" id="stat-matched">—</div></div>
+    <div class="stat-card unmatched"><div class="label">Unmatched</div><div class="value" id="stat-unmatched">—</div></div>
+    <div class="stat-card review"><div class="label">Review needed</div><div class="value" id="stat-review">—</div></div>
+  </div>
+
+  <!-- Results table -->
+  <div class="section-header" id="results-header" style="display:none">
+    <h2>Reconciliation results</h2>
+    <button class="btn btn-secondary" onclick="loadResults()">↻ Refresh</button>
+  </div>
+
+  <div class="table-wrap" id="results-table" style="display:none">
+    <table>
+      <thead>
+        <tr>
+          <th>Transaction</th>
+          <th>Amount</th>
+          <th>Date</th>
+          <th>Matched invoice</th>
+          <th>Match type</th>
+          <th>Confidence</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+
+  <div class="empty-state" id="empty-state" style="display:none">
+    <div style="font-size:2rem">📊</div>
+    <p>No reconciliation results yet. Upload a bank statement to get started.</p>
+  </div>
+</main>
+
+<!-- Status bar -->
+<div id="status-bar">
+  <div class="spinner" id="status-spinner"></div>
+  <span id="status-text">Processing...</span>
+</div>
+
+<script>
+  // ── Config ──
+  const SUPABASE_URL = window.__SUPABASE_URL__ || '';
+  const SUPABASE_ANON_KEY = window.__SUPABASE_ANON_KEY__ || '';
+
+  let authMode = 'signin'; // 'signin' | 'signup'
+  let currentToken = null;
+
+  // ── Auth helpers ──
+  async function api(path, opts = {}) {
+    const headers = { 'Content-Type': 'application/json', ...opts.headers };
+    if (currentToken) headers['Authorization'] = `Bearer ${currentToken}`;
+    const res = await fetch(path, { ...opts, headers });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  }
+
+  async function supabaseAuth(action, body) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
+  function toggleAuthMode() {
+    authMode = authMode === 'signin' ? 'signup' : 'signin';
+    document.getElementById('auth-title').textContent = authMode === 'signin' ? 'Sign in' : 'Create account';
+    document.getElementById('auth-btn').textContent = authMode === 'signin' ? 'Sign in' : 'Sign up';
+    document.getElementById('auth-toggle-text').textContent =
+      authMode === 'signin' ? "Don't have an account?" : 'Already have an account?';
+    document.getElementById('auth-error').textContent = '';
+  }
+
+  async function handleAuth() {
+    const email = document.getElementById('auth-email').value.trim();
+    const password = document.getElementById('auth-password').value;
+    const btn = document.getElementById('auth-btn');
+    const errEl = document.getElementById('auth-error');
+
+    if (!email || !password) {
+      errEl.textContent = 'Email and password are required.';
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Please wait...';
+    errEl.textContent = '';
+
+    try {
+      const action = authMode === 'signin' ? 'token?grant_type=password' : 'signup';
+      const data = await supabaseAuth(action, { email, password });
+
+      if (data.error) throw new Error(data.error_description || data.error);
+
+      currentToken = data.access_token;
+      localStorage.setItem('steve_token', currentToken);
+
+      showApp(email);
+    } catch (err) {
+      errEl.textContent = err.message;
+      btn.disabled = false;
+      btn.textContent = authMode === 'signin' ? 'Sign in' : 'Sign up';
+    }
+  }
+
+  function signOut() {
+    currentToken = null;
+    localStorage.removeItem('steve_token');
+    document.getElementById('app-view').style.display = 'none';
+    document.getElementById('auth-view').style.display = 'block';
+    document.getElementById('header-user').style.display = 'none';
+  }
+
+  function showApp(email) {
+    document.getElementById('auth-view').style.display = 'none';
+    document.getElementById('app-view').style.display = 'block';
+    document.getElementById('header-user').style.display = 'flex';
+    document.getElementById('header-email').textContent = email;
+    loadResults();
+  }
+
+  // ── Upload ──
+  async function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (file) await uploadFile(file);
+  }
+
+  async function handleDrop(event) {
+    event.preventDefault();
+    document.getElementById('upload-zone').classList.remove('dragging');
+    const file = event.dataTransfer.files[0];
+    if (file) await uploadFile(file);
+  }
+
+  async function uploadFile(file) {
+    if (!file.name.match(/\.(pdf|xlsx)$/i)) {
+      showStatus('Only PDF and Excel files are supported.', false);
+      return;
+    }
+
+    showStatus('Uploading and extracting transactions...');
+
+    try {
+      // 1. Create upload record
+      const uploadRes = await api('/api/upload', {
+        method: 'POST',
+        body: JSON.stringify({ fileName: file.name, fileType: file.type }),
+      });
+
+      // 2. Read file as text (simple approach for MVP)
+      const text = await readFileAsText(file);
+
+      // 3. Extract transactions
+      showStatus('Extracting invoice data with Claude...');
+      const extractRes = await api('/api/extract', {
+        method: 'POST',
+        body: JSON.stringify({ uploadId: uploadRes.uploadId, text, fileName: file.name }),
+      });
+
+      // 4. Run reconciliation
+      showStatus('Reconciling against Xero invoices...');
+      await api('/api/reconcile', { method: 'POST' });
+
+      hideStatus();
+      showStatus(`Done! ${extractRes.count} transactions extracted and reconciled.`, false, true);
+      setTimeout(hideStatus, 3000);
+      loadResults();
+    } catch (err) {
+      hideStatus();
+      showStatus(`Error: ${err.message}`, false, false, true);
+      setTimeout(hideStatus, 5000);
+    }
+  }
+
+  function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  }
+
+  // ── Results ──
+  async function loadResults() {
+    try {
+      const data = await api('/api/results');
+      renderResults(data);
+    } catch (err) {
+      console.error('Load results error:', err);
+    }
+  }
+
+  function renderResults(data) {
+    const { reconciliations = [], stats = {} } = data;
+
+    // Stats
+    document.getElementById('stats-row').style.display = 'grid';
+    document.getElementById('stat-total').textContent = stats.total ?? 0;
+    document.getElementById('stat-matched').textContent = stats.matched ?? 0;
+    document.getElementById('stat-unmatched').textContent = stats.unmatched ?? 0;
+    document.getElementById('stat-review').textContent = stats.review ?? 0;
+
+    if (reconciliations.length === 0) {
+      document.getElementById('results-table').style.display = 'none';
+      document.getElementById('results-header').style.display = 'none';
+      document.getElementById('empty-state').style.display = 'block';
+      return;
+    }
+
+    document.getElementById('results-header').style.display = 'flex';
+    document.getElementById('results-table').style.display = 'block';
+    document.getElementById('empty-state').style.display = 'none';
+
+    const tbody = document.getElementById('results-body');
+    tbody.innerHTML = reconciliations.map((r) => {
+      const matchBadge = r.match_type === 'exact_id'
+        ? '<span class="badge badge-matched">Exact match</span>'
+        : r.match_type === 'semantic'
+        ? '<span class="badge badge-semantic">Semantic</span>'
+        : '<span class="badge badge-unmatched">Unmatched</span>';
+
+      const status = r.overridden_by_user
+        ? '<span class="badge badge-review">Overridden</span>'
+        : r.match_type === 'unmatched'
+        ? '<span class="badge badge-unmatched">No match</span>'
+        : '<span class="badge badge-matched">Reconciled</span>';
+
+      const confidence = r.confidence
+        ? (() => {
+            const pct = Math.round(r.confidence * 100);
+            const cls = pct >= 80 ? '' : pct >= 60 ? 'low' : 'very-low';
+            return `<div class="confidence-bar">
+              <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
+              <span style="font-size:0.75rem;color:var(--muted);width:32px;text-align:right">${pct}%</span>
+            </div>`;
+          })()
+        : '—';
+
+      const amt = r.bank_transaction?.amount
+        ? `<span class="amount">${formatCurrency(r.bank_transaction.amount, r.bank_transaction.currency)}</span>`
+        : '—';
+
+      const date = r.bank_transaction?.transaction_date
+        ? new Date(r.bank_transaction.transaction_date).toLocaleDateString('en-GB')
+        : '—';
+
+      const invoice = r.invoice
+        ? `${r.invoice.invoice_number}${r.invoice.contact_name ? ` · ${r.invoice.contact_name}` : ''}`
+        : '—';
+
+      return `<tr>
+        <td>${r.bank_transaction?.activity_description || r.bank_transaction?.invoice_number || '—'}</td>
+        <td>${amt}</td>
+        <td>${date}</td>
+        <td style="color:var(--muted)">${invoice}</td>
+        <td>${matchBadge}</td>
+        <td>${confidence}</td>
+        <td>${status}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function formatCurrency(amount, currency) {
+    const symbol = currency === 'GBP' ? '£' : currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '';
+    return `${symbol}${Number(amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  // ── Status bar ──
+  function showStatus(text, spinner = true, success = false, error = false) {
+    const bar = document.getElementById('status-bar');
+    document.getElementById('status-text').textContent = text;
+    document.getElementById('status-spinner').style.display = spinner ? 'block' : 'none';
+    bar.style.borderColor = error ? 'var(--error)' : success ? 'var(--success)' : 'var(--border)';
+    bar.classList.add('visible');
+  }
+
+  function hideStatus() {
+    document.getElementById('status-bar').classList.remove('visible');
+  }
+
+  // ── Init ──
+  (function init() {
+    const saved = localStorage.getItem('steve_token');
+    if (saved) {
+      currentToken = saved;
+      // Quick token validation — load app if valid
+      api('/api/me').then((data) => {
+        showApp(data.email);
+      }).catch(() => {
+        localStorage.removeItem('steve_token');
+        currentToken = null;
+      });
+    }
+  })();
+</script>
+</body>
+</html>
