@@ -13,7 +13,7 @@ const claude = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function claudeCall(content, systemPrompt) {
   const msg = await claude.messages.create({
-    model: "claude-opus-4-5",
+    model: "claude-opus-4-6",
     max_tokens: 4096,
     system: systemPrompt,
     messages: [{ role: "user", content: content || "Extract from the document above." }],
