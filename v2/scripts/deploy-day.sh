@@ -114,7 +114,22 @@ ok "Supabase project linked"
 
 step "Pushing database migrations"
 
+# Patch migration 003: substitute placeholders with real values before pushing.
+# The file is a template in git; we restore it after the push.
+MIGRATION_003="$V2_DIR/supabase/migrations/003_auto_embed_trigger.sql"
+MIGRATION_003_BAK="${MIGRATION_003}.bak"
+cp "$MIGRATION_003" "$MIGRATION_003_BAK"
+sed \
+  -e "s|<YOUR_SUPABASE_PROJECT_REF>|${SUPABASE_PROJECT_REF}|g" \
+  -e "s|<YOUR_SUPABASE_ANON_KEY>|${SUPABASE_ANON_KEY}|g" \
+  "$MIGRATION_003_BAK" > "$MIGRATION_003"
+# Ensure the template is restored even if supabase db push fails
+trap 'mv "$MIGRATION_003_BAK" "$MIGRATION_003"' EXIT INT TERM
+
 supabase db push
+
+trap - EXIT INT TERM
+mv "$MIGRATION_003_BAK" "$MIGRATION_003"
 ok "Migrations applied"
 
 # ── Step 5: Deploy edge functions ──────────────────────────────────────────────
