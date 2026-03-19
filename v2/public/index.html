@@ -405,6 +405,38 @@
     .onboarding-text { color: var(--text); line-height: 1.5; }
     .onboarding-text small { color: var(--muted); display: block; font-size: 0.8125rem; margin-top: 2px; }
 
+    /* ── Review action buttons (Confirm / Override) ── */
+    .review-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .btn-confirm {
+      padding: 3px 10px;
+      font-size: 0.75rem;
+      border-radius: 4px;
+      border: 1px solid var(--success);
+      background: transparent;
+      color: var(--success);
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.15s, color 0.15s;
+    }
+    .btn-confirm:hover { background: var(--success); color: #fff; }
+    .btn-override {
+      padding: 3px 10px;
+      font-size: 0.75rem;
+      border-radius: 4px;
+      border: 1px solid var(--error);
+      background: transparent;
+      color: var(--error);
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.15s, color 0.15s;
+    }
+    .btn-override:hover { background: var(--error); color: #fff; }
+
     /* ── Responsive ── */
     @media (max-width: 768px) {
       header { padding: 12px 16px; }
@@ -899,8 +931,15 @@
         ? '<span class="badge badge-semantic">Semantic</span>'
         : '<span class="badge badge-unmatched">Unmatched</span>';
 
+      const needsReview = r.match_type === 'semantic' && !r.overridden_by_user;
+      const reviewActions = needsReview
+        ? `<div class="review-actions">
+            <button class="btn-confirm" onclick="confirmMatch('${r.id}', this)">✓ Confirm</button>
+            <button class="btn-override" onclick="overrideMatch('${r.id}', this)">✗ Override</button>
+           </div>`
+        : '';
       const status = r.overridden_by_user
-        ? '<span class="badge badge-overridden">Overridden</span>'
+        ? `<span class="badge badge-overridden" title="${escapeHtml(r.override_note || '')}">Overridden</span>`
         : r.match_type === 'unmatched'
         ? '<span class="badge badge-unmatched">No match</span>'
         : r.match_type === 'semantic'
@@ -941,14 +980,14 @@
         ? `<div class="match-reason" title="${escapeHtml(r.match_reason)}">${escapeHtml(r.match_reason)}</div>`
         : '';
 
-      return `<tr>
+      return `<tr data-rec-id="${r.id}">
         <td>${description}</td>
         <td style="white-space:nowrap">${amt}</td>
         <td style="white-space:nowrap">${date}</td>
         <td>${invoice}${matchReason}</td>
         <td>${matchBadge}</td>
         <td>${confidence}</td>
-        <td>${status}</td>
+        <td>${status}${reviewActions}</td>
       </tr>`;
     }).join('');
   }
@@ -968,6 +1007,60 @@
       : currency === 'EUR' ? '€'
       : (currency ? currency + '\u00a0' : '');
     return `${symbol}${Number(amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  // ── Review actions (Confirm / Override semantic matches) ──
+  async function confirmMatch(id, btn) {
+    btn.disabled = true;
+    try {
+      await api('/api/review', {
+        method: 'PATCH',
+        body: JSON.stringify({ id, action: 'confirm' }),
+      });
+      // Update the row in place: swap badge + remove buttons
+      const row = document.querySelector(`tr[data-rec-id="${id}"]`);
+      if (row) {
+        const statusCell = row.cells[row.cells.length - 1];
+        statusCell.innerHTML = '<span class="badge badge-matched">Reconciled</span>';
+        // Update match type badge in column 4
+        row.cells[4].innerHTML = '<span class="badge badge-matched">Exact match</span>';
+      }
+      // Update the review stat counter
+      const statEl = document.getElementById('stat-review');
+      const current = parseInt(statEl.textContent, 10);
+      if (!isNaN(current) && current > 0) statEl.textContent = current - 1;
+    } catch (err) {
+      showStatus('Could not confirm match: ' + err.message, false, false, true);
+      setTimeout(hideStatus, 4000);
+      btn.disabled = false;
+    }
+  }
+
+  async function overrideMatch(id, btn) {
+    const note = prompt('Reason for override (optional):') ?? '';
+    if (note === null) return; // user cancelled prompt
+    btn.disabled = true;
+    try {
+      await api('/api/review', {
+        method: 'PATCH',
+        body: JSON.stringify({ id, action: 'override', note }),
+      });
+      // Update the row in place
+      const row = document.querySelector(`tr[data-rec-id="${id}"]`);
+      if (row) {
+        const statusCell = row.cells[row.cells.length - 1];
+        const titleAttr = note ? ` title="${escapeHtml(note)}"` : '';
+        statusCell.innerHTML = `<span class="badge badge-overridden"${titleAttr}>Overridden</span>`;
+      }
+      // Update the review stat counter
+      const statEl = document.getElementById('stat-review');
+      const current = parseInt(statEl.textContent, 10);
+      if (!isNaN(current) && current > 0) statEl.textContent = current - 1;
+    } catch (err) {
+      showStatus('Could not save override: ' + err.message, false, false, true);
+      setTimeout(hideStatus, 4000);
+      btn.disabled = false;
+    }
   }
 
   // ── Status bar ──
