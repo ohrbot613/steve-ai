@@ -102,20 +102,20 @@ async function reconcileClient(supabase, clientId) {
 
         if (diff > 0.5) {
           // >50% difference: reject the ID match entirely, fall through to semantic
-        } else if (diff > 0.1) {
-          // 10–50% difference: downgrade to semantic (needs review)
+        } else if (diff > 0.05) {
+          // >5% difference: downgrade to needs_review — amounts don't match well enough to auto-reconcile
           reconciliationRows.push({
             client_id: clientId,
             bank_transaction_id: tx.id,
             invoice_id: bestInvoice.id,
-            match_type: "semantic",
+            match_type: "needs_review",
             confidence: Math.round(bestScore * 0.7 * 100) / 100,
             match_reason: `ID matched (${bestInvoice.invoice_number}) but amount differs by ${(diff * 100).toFixed(1)}% — tx: ${txAmount}, inv: ${invAmount}`,
           });
           semanticMatches++;
           continue;
         } else {
-          // ≤10% difference: accept as exact
+          // ≤5% difference: accept as exact
           reconciliationRows.push({
             client_id: clientId,
             bank_transaction_id: tx.id,

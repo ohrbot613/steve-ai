@@ -971,11 +971,13 @@
     tbody.innerHTML = reconciliations.map((r) => {
       const matchBadge = r.match_type === 'exact_id'
         ? '<span class="badge badge-matched">Exact match</span>'
+        : r.match_type === 'needs_review'
+        ? '<span class="badge badge-review">Amount mismatch</span>'
         : r.match_type === 'semantic'
         ? '<span class="badge badge-semantic">Semantic</span>'
         : '<span class="badge badge-unmatched">Unmatched</span>';
 
-      const needsReview = r.match_type === 'semantic' && !r.overridden_by_user;
+      const needsReview = (r.match_type === 'semantic' || r.match_type === 'needs_review') && !r.overridden_by_user;
       const reviewActions = needsReview
         ? `<div class="review-actions">
             <button class="btn-confirm" onclick="confirmMatch('${r.id}', this)">✓ Confirm</button>
@@ -993,6 +995,8 @@
         ? `<span class="badge badge-overridden" title="${escapeHtml(r.override_note || '')}">Overridden</span>${paidTag}`
         : r.match_type === 'unmatched'
         ? '<span class="badge badge-unmatched">No match</span>'
+        : r.match_type === 'needs_review'
+        ? `<span class="badge badge-review">Needs review</span>${paidTag}`
         : r.match_type === 'semantic'
         ? `<span class="badge badge-review">Needs review</span>${paidTag}`
         : `<span class="badge badge-matched">Reconciled</span>${paidTag}`;
@@ -1022,18 +1026,23 @@
         ? `${escapeHtml(r.invoice.invoice_number)}${r.invoice.contact_name ? ` · ${escapeHtml(r.invoice.contact_name)}` : ''}`
         : '<span style="color:var(--muted)">—</span>';
 
+      // For amount-mismatch rows, show invoice amount alongside the transaction amount
+      const invoiceAmtNote = (r.match_type === 'needs_review' && r.invoice?.amount)
+        ? ` <span style="color:var(--warning);font-size:0.8em">(inv: ${formatCurrency(r.invoice.amount, r.bank_transaction?.currency)})</span>`
+        : '';
+
       const description = escapeHtml(
         r.bank_transaction?.activity_description || r.bank_transaction?.invoice_number || '—'
       );
 
-      // Show AI match reason under the invoice for semantic matches
-      const matchReason = (r.match_type === 'semantic' && r.match_reason)
+      // Show match reason under the invoice for semantic and needs_review matches
+      const matchReason = ((r.match_type === 'semantic' || r.match_type === 'needs_review') && r.match_reason)
         ? `<div class="match-reason" title="${escapeHtml(r.match_reason)}">${escapeHtml(r.match_reason)}</div>`
         : '';
 
       return `<tr data-rec-id="${r.id}">
         <td>${description}</td>
-        <td style="white-space:nowrap">${amt}</td>
+        <td style="white-space:nowrap">${amt}${invoiceAmtNote}</td>
         <td style="white-space:nowrap">${date}</td>
         <td>${invoice}${matchReason}</td>
         <td>${matchBadge}</td>

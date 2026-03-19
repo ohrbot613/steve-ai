@@ -39,7 +39,7 @@ export default async function handler(req, res) {
   ).length;
   const unmatched = reconciliations.filter((r) => r.match_type === "unmatched").length;
   const review = reconciliations.filter(
-    (r) => r.match_type === "semantic" && !r.overridden_by_user
+    (r) => (r.match_type === "semantic" || r.match_type === "needs_review") && !r.overridden_by_user
   ).length;
 
   return res.json({
