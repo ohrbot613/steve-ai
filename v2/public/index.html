@@ -638,10 +638,22 @@
   <span id="status-text">Processing...</span>
 </div>
 
+<!-- Override reason modal (REC-112) -->
+<div id="override-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:360px;max-width:90vw;">
+    <p style="margin-bottom:12px;font-weight:500;">Override reason <span style="color:var(--muted);font-weight:400;">(optional)</span></p>
+    <input id="override-input" type="text" placeholder="e.g. Duplicate invoice, manually verified" style="width:100%;margin-bottom:16px;" />
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-secondary" id="override-cancel">Cancel</button>
+      <button class="btn btn-primary" id="override-confirm" style="width:auto;">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <script>
   // ── Config ──
-  const SUPABASE_URL = window.__SUPABASE_URL__ || '';
-  const SUPABASE_ANON_KEY = window.__SUPABASE_ANON_KEY__ || '';
+  let SUPABASE_URL = window.__SUPABASE_URL__ || '';
+  let SUPABASE_ANON_KEY = window.__SUPABASE_ANON_KEY__ || '';
 
   let authMode = 'signin'; // 'signin' | 'signup'
   let currentToken = null;
@@ -1036,9 +1048,23 @@
     }
   }
 
+  // ── Inline modal prompt — replaces browser prompt() (REC-112) ──
+  function showOverrideModal() {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('override-modal');
+      const input = document.getElementById('override-input');
+      input.value = '';
+      modal.style.display = 'flex';
+      input.focus();
+      function cleanup() { modal.style.display = 'none'; }
+      document.getElementById('override-confirm').onclick = () => { cleanup(); resolve(input.value.trim()); };
+      document.getElementById('override-cancel').onclick = () => { cleanup(); resolve(null); };
+    });
+  }
+
   async function overrideMatch(id, btn) {
-    const note = prompt('Reason for override (optional):') ?? '';
-    if (note === null) return; // user cancelled prompt
+    const note = await showOverrideModal();
+    if (note === null) return; // user cancelled
     btn.disabled = true;
     try {
       await api('/api/review', {
@@ -1077,7 +1103,15 @@
   }
 
   // ── Init ──
-  (function init() {
+  (async function init() {
+    // REC-113: Fetch Supabase config from server before any auth calls
+    try {
+      const configRes = await fetch('/api/config');
+      const config = await configRes.json();
+      if (config.supabaseUrl) SUPABASE_URL = config.supabaseUrl;
+      if (config.supabaseAnonKey) SUPABASE_ANON_KEY = config.supabaseAnonKey;
+    } catch (e) { console.warn('Config fetch failed, using fallback:', e); }
+
     // Handle Xero OAuth callback redirects
     const params = new URLSearchParams(window.location.search);
     const xeroStatus = params.get('xero');
