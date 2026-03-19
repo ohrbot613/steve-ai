@@ -458,8 +458,9 @@
     <div class="banner-icon">🔗</div>
     <div class="banner-text">
       <strong>Connect Xero to enable reconciliation</strong>
-      Steve pulls unpaid invoices from Xero every hour and matches them against your uploaded statements. Ask your admin to connect Xero.
+      Steve pulls unpaid invoices from Xero every hour and matches them against your uploaded statements.
     </div>
+    <button class="btn btn-secondary" onclick="connectXero()" style="margin-left:auto;white-space:nowrap">Connect Xero</button>
   </div>
 
   <!-- Results load error -->
@@ -666,7 +667,7 @@
       currentToken = data.access_token;
       localStorage.setItem('steve_token', currentToken);
 
-      showApp(email);
+      showApp(email, false);
     } catch (err) {
       errEl.textContent = err.message;
       btn.disabled = false;
@@ -690,12 +691,29 @@
     document.getElementById('header-user').style.display = 'none';
   }
 
-  function showApp(email) {
+  function showApp(email, xeroConnected) {
     document.getElementById('auth-view').style.display = 'none';
     document.getElementById('app-view').style.display = 'block';
     document.getElementById('header-user').style.display = 'flex';
     document.getElementById('header-email').textContent = email;
+    document.getElementById('xero-banner').style.display = xeroConnected ? 'none' : 'flex';
     loadResults();
+  }
+
+  async function connectXero() {
+    try {
+      showStatus('Connecting to Xero...', true);
+      const res = await fetch('/api/xero-auth', {
+        headers: { 'Authorization': `Bearer ${currentToken}`, 'Accept': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok || !data.url) throw new Error(data.error || 'Could not get Xero auth URL');
+      hideStatus();
+      window.location.href = data.url;
+    } catch (err) {
+      showStatus('Xero connection failed: ' + err.message, false, false, true);
+      setTimeout(hideStatus, 5000);
+    }
   }
 
   // ── Upload ──
@@ -762,11 +780,25 @@
       });
       setStep('step-upload', 'done');
 
-      // Step 2: Read + extract
-      // Note: readAsText works for text-based files (Excel exports).
-      // PDFs sent as raw text may have reduced extraction accuracy.
+      // Step 2: Parse + extract
+      // PDFs: upload raw bytes to /api/parse for server-side text extraction.
+      // Non-PDFs (Excel exports): read as text client-side (no garbling risk).
       setStep('step-extract', 'active');
-      const text = await readFileAsText(file);
+      let text;
+      if (file.name.toLowerCase().endsWith('.pdf')) {
+        const form = new FormData();
+        form.append('file', file);
+        const parseRes = await fetch('/api/parse', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${currentToken}` },
+          body: form,
+        });
+        const parseData = await parseRes.json();
+        if (!parseRes.ok) throw new Error(parseData.error || 'PDF parsing failed');
+        text = parseData.text;
+      } else {
+        text = await readFileAsText(file);
+      }
       const extractRes = await api('/api/extract', {
         method: 'POST',
         body: JSON.stringify({ uploadId: uploadRes.uploadId, text, fileName: file.name }),
@@ -953,11 +985,29 @@
 
   // ── Init ──
   (function init() {
+    // Handle Xero OAuth callback redirects
+    const params = new URLSearchParams(window.location.search);
+    const xeroStatus = params.get('xero');
+    if (xeroStatus) {
+      history.replaceState({}, '', '/');
+      if (xeroStatus === 'connected') {
+        showStatus('Xero connected! Invoices will sync within the hour.', false, true);
+        setTimeout(hideStatus, 6000);
+      } else if (xeroStatus === 'denied') {
+        showStatus('Xero connection was cancelled.', false, false, true);
+        setTimeout(hideStatus, 5000);
+      } else if (xeroStatus === 'error') {
+        const reason = params.get('reason') || 'unknown';
+        showStatus(`Xero connection failed (${reason}). Please try again.`, false, false, true);
+        setTimeout(hideStatus, 7000);
+      }
+    }
+
     const saved = localStorage.getItem('steve_token');
     if (saved) {
       currentToken = saved;
       api('/api/me').then((data) => {
-        showApp(data.email);
+        showApp(data.email, data.xeroConnected);
       }).catch(() => {
         localStorage.removeItem('steve_token');
         currentToken = null;

@@ -14,5 +14,16 @@ export default async function handler(req, res) {
   const { data: { user }, error } = await supabase.auth.getUser();
   if (error || !user) return res.status(401).json({ error: "Invalid token" });
 
-  return res.json({ id: user.id, email: user.email });
+  // Fetch xero connection status from clients table
+  const { data: client } = await supabase
+    .from("clients")
+    .select("xero_tenant_id")
+    .eq("id", user.id)
+    .single();
+
+  return res.json({
+    id: user.id,
+    email: user.email,
+    xeroConnected: !!(client?.xero_tenant_id),
+  });
 }

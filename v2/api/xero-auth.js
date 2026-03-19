@@ -84,6 +84,10 @@ export default async function handler(req, res) {
 
   const authUrl = `${XERO_AUTH_URL}?${params.toString()}`;
 
-  // ── 4. Redirect to Xero ─────────────────────────────────────────────────────
+  // ── 4. Return URL (frontend navigates) or redirect for direct browser hits ──
+  // JSON clients (fetch from SPA) get { url }; plain browser navigation gets 302.
+  if (req.headers.accept?.includes("application/json")) {
+    return res.status(200).json({ url: authUrl });
+  }
   return res.redirect(302, authUrl);
 }
