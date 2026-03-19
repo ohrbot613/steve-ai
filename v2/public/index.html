@@ -112,9 +112,42 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 20px;
+      margin-bottom: 12px;
     }
     .section-header h2 { font-size: 1.125rem; font-weight: 600; }
+
+    /* ── Xero connection banner ── */
+    .info-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      border-radius: 10px;
+      padding: 14px 20px;
+      margin-bottom: 24px;
+      font-size: 0.875rem;
+    }
+    .info-banner.xero-needed {
+      background: #1e3a5f;
+      border: 1px solid #2563eb;
+    }
+    .info-banner.xero-needed .banner-text { color: #93c5fd; }
+    .info-banner.xero-needed .banner-text strong { color: #bfdbfe; display: block; margin-bottom: 2px; }
+    .info-banner .banner-icon { font-size: 1.25rem; flex-shrink: 0; padding-top: 1px; }
+
+    /* ── Load error ── */
+    .load-error {
+      background: var(--unmatched);
+      border: 1px solid var(--error);
+      border-radius: 10px;
+      padding: 14px 20px;
+      margin-bottom: 20px;
+      font-size: 0.875rem;
+      color: var(--unmatched-text);
+      display: none;
+      align-items: center;
+      gap: 8px;
+    }
+    .load-error.visible { display: flex; }
 
     /* ── Upload zone ── */
     .upload-zone {
@@ -123,12 +156,55 @@
       padding: 40px;
       text-align: center;
       cursor: pointer;
-      transition: border-color 0.15s;
+      transition: border-color 0.15s, background 0.15s;
       margin-bottom: 32px;
     }
-    .upload-zone:hover, .upload-zone.dragging { border-color: var(--accent); }
+    .upload-zone:hover, .upload-zone.dragging {
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.04);
+    }
+    .upload-zone.uploading {
+      border-color: var(--accent-light);
+      cursor: not-allowed;
+    }
     .upload-zone p { color: var(--muted); font-size: 0.9375rem; margin-top: 8px; }
+    .upload-zone .file-types { font-size: 0.8125rem; color: var(--muted); margin-top: 4px; }
     .upload-zone .icon { font-size: 2rem; }
+
+    /* ── Inline upload progress ── */
+    .upload-progress {
+      margin-top: 20px;
+      display: none;
+    }
+    .upload-progress.visible { display: block; }
+    .progress-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      text-align: left;
+      max-width: 320px;
+      margin: 0 auto;
+    }
+    .progress-step {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.875rem;
+      color: var(--muted);
+      transition: color 0.2s;
+    }
+    .progress-step.active { color: var(--text); }
+    .progress-step.done { color: var(--success); }
+    .progress-step.error { color: var(--error); }
+    .step-icon { width: 18px; text-align: center; flex-shrink: 0; }
+    .step-spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent-light);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
 
     /* ── Stats ── */
     .stats-row {
@@ -146,9 +222,30 @@
     }
     .stat-card .label { font-size: 0.8125rem; color: var(--muted); margin-bottom: 8px; }
     .stat-card .value { font-size: 1.75rem; font-weight: 700; }
+    .stat-card .sublabel { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
     .stat-card.matched .value { color: var(--success); }
     .stat-card.unmatched .value { color: var(--error); }
     .stat-card.review .value { color: var(--warning); }
+
+    /* ── Match type legend ── */
+    .match-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 16px;
+      font-size: 0.8125rem;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+    }
+    .legend-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
 
     /* ── Table ── */
     .table-wrap {
@@ -156,9 +253,10 @@
       border: 1px solid var(--border);
       border-radius: 12px;
       overflow: hidden;
+      overflow-x: auto;
     }
 
-    table { width: 100%; border-collapse: collapse; }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
     th {
       text-align: left;
       padding: 12px 16px;
@@ -171,6 +269,7 @@
       padding: 12px 16px;
       font-size: 0.875rem;
       border-bottom: 1px solid var(--border);
+      vertical-align: top;
     }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: rgba(99,102,241,0.04); }
@@ -186,7 +285,9 @@
     .badge-unmatched { background: var(--unmatched); color: var(--unmatched-text); }
     .badge-review { background: var(--review); color: var(--review-text); }
     .badge-semantic { background: #1e3a5f; color: #93c5fd; }
+    .badge-overridden { background: #3b2c00; color: #fbbf24; }
 
+    /* ── Confidence bar — taller for readability ── */
     .confidence-bar {
       display: flex;
       align-items: center;
@@ -194,22 +295,43 @@
     }
     .bar-track {
       flex: 1;
-      height: 4px;
+      height: 8px;
       background: var(--border);
-      border-radius: 2px;
+      border-radius: 4px;
       overflow: hidden;
+      min-width: 56px;
     }
     .bar-fill {
       height: 100%;
-      border-radius: 2px;
+      border-radius: 4px;
       background: var(--success);
+      transition: width 0.3s ease;
     }
-    .bar-fill.low { background: var(--warning); }
-    .bar-fill.very-low { background: var(--error); }
+    .bar-fill.medium { background: var(--warning); }
+    .bar-fill.low { background: var(--error); }
+    .confidence-pct {
+      font-size: 0.8125rem;
+      color: var(--muted);
+      width: 36px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    /* ── Match reason sub-label ── */
+    .match-reason {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 3px;
+      max-width: 200px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
     .amount { font-variant-numeric: tabular-nums; }
 
-    /* ── Status overlay ── */
+    /* ── Status bar ── */
     #status-bar {
       position: fixed;
       bottom: 24px;
@@ -224,6 +346,8 @@
       align-items: center;
       gap: 10px;
       box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      z-index: 100;
+      max-width: calc(100vw - 48px);
     }
     #status-bar.visible { display: flex; }
 
@@ -233,17 +357,64 @@
       border-top-color: var(--accent-light);
       border-radius: 50%;
       animation: spin 0.6s linear infinite;
+      flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* ── Empty state ── */
-    .empty-state { text-align: center; padding: 48px; color: var(--muted); }
-    .empty-state p { margin-top: 8px; font-size: 0.9375rem; }
+    /* ── Empty state with onboarding steps ── */
+    .empty-state {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--muted);
+    }
+    .empty-state .empty-icon { font-size: 2.5rem; margin-bottom: 12px; }
+    .empty-state h3 { font-size: 1rem; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+    .empty-state > p {
+      font-size: 0.9375rem;
+      line-height: 1.6;
+      max-width: 420px;
+      margin: 0 auto 28px;
+    }
+    .onboarding-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 360px;
+      margin: 0 auto;
+      text-align: left;
+    }
+    .onboarding-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      font-size: 0.875rem;
+    }
+    .onboarding-num {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .onboarding-text { color: var(--text); line-height: 1.5; }
+    .onboarding-text small { color: var(--muted); display: block; font-size: 0.8125rem; margin-top: 2px; }
 
     /* ── Responsive ── */
     @media (max-width: 768px) {
+      header { padding: 12px 16px; }
       main { padding: 16px; }
       .stats-row { grid-template-columns: repeat(2, 1fr); }
+      .match-legend { gap: 10px; }
+    }
+    @media (max-width: 480px) {
+      .stat-card { padding: 14px; }
+      .stat-card .value { font-size: 1.4rem; }
     }
   </style>
 </head>
@@ -264,11 +435,11 @@
 
   <div class="form-group">
     <label>Email</label>
-    <input type="email" id="auth-email" placeholder="you@company.com" />
+    <input type="email" id="auth-email" placeholder="you@company.com" autocomplete="email" />
   </div>
   <div class="form-group">
     <label>Password</label>
-    <input type="password" id="auth-password" placeholder="••••••••" />
+    <input type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password" />
   </div>
 
   <button class="btn btn-primary" id="auth-btn" onclick="handleAuth()">Sign in</button>
@@ -281,35 +452,104 @@
 
 <!-- ── App ── -->
 <main id="app-view">
-  <!-- Upload -->
+
+  <!-- Xero connection status banner (shown when Xero not connected) -->
+  <div class="info-banner xero-needed" id="xero-banner" style="display:none">
+    <div class="banner-icon">🔗</div>
+    <div class="banner-text">
+      <strong>Connect Xero to enable reconciliation</strong>
+      Steve pulls unpaid invoices from Xero every hour and matches them against your uploaded statements. Ask your admin to connect Xero.
+    </div>
+  </div>
+
+  <!-- Results load error -->
+  <div class="load-error" id="load-error">
+    <strong>Could not load results.</strong>
+    <span id="load-error-msg"></span>
+    <a href="#" onclick="loadResults(); return false;" style="color:var(--unmatched-text); margin-left:4px; text-decoration:underline;">Retry</a>
+  </div>
+
+  <!-- Upload zone -->
   <div
     class="upload-zone"
     id="upload-zone"
-    onclick="document.getElementById('file-input').click()"
+    onclick="triggerFileSelect()"
     ondragover="event.preventDefault(); this.classList.add('dragging')"
     ondragleave="this.classList.remove('dragging')"
     ondrop="handleDrop(event)"
   >
     <div class="icon">📄</div>
     <strong>Upload bank statement</strong>
-    <p>PDF or Excel (.xlsx) — drag and drop or click to browse</p>
+    <p>Drag and drop or click to browse</p>
+    <p class="file-types">Supported formats: PDF, Excel (.xlsx)</p>
     <input type="file" id="file-input" accept=".pdf,.xlsx" style="display:none" onchange="handleFileSelect(event)" />
+
+    <!-- Inline step progress -->
+    <div class="upload-progress" id="upload-progress">
+      <div class="progress-steps">
+        <div class="progress-step" id="step-upload">
+          <span class="step-icon" id="step-upload-icon">○</span>
+          <span>Uploading file</span>
+        </div>
+        <div class="progress-step" id="step-extract">
+          <span class="step-icon" id="step-extract-icon">○</span>
+          <span>Extracting transactions with Claude AI</span>
+        </div>
+        <div class="progress-step" id="step-reconcile">
+          <span class="step-icon" id="step-reconcile-icon">○</span>
+          <span>Reconciling against Xero invoices</span>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <!-- Stats -->
+  <!-- Stats row (only shown when data exists) -->
   <div class="stats-row" id="stats-row" style="display:none">
-    <div class="stat-card"><div class="label">Total transactions</div><div class="value" id="stat-total">—</div></div>
-    <div class="stat-card matched"><div class="label">Matched</div><div class="value" id="stat-matched">—</div></div>
-    <div class="stat-card unmatched"><div class="label">Unmatched</div><div class="value" id="stat-unmatched">—</div></div>
-    <div class="stat-card review"><div class="label">Review needed</div><div class="value" id="stat-review">—</div></div>
+    <div class="stat-card">
+      <div class="label">Total transactions</div>
+      <div class="value" id="stat-total">—</div>
+      <div class="sublabel">in this reconciliation</div>
+    </div>
+    <div class="stat-card matched">
+      <div class="label">Matched</div>
+      <div class="value" id="stat-matched">—</div>
+      <div class="sublabel">exact invoice ID</div>
+    </div>
+    <div class="stat-card unmatched">
+      <div class="label">Unmatched</div>
+      <div class="value" id="stat-unmatched">—</div>
+      <div class="sublabel">no invoice found</div>
+    </div>
+    <div class="stat-card review">
+      <div class="label">Needs review</div>
+      <div class="value" id="stat-review">—</div>
+      <div class="sublabel">semantic match, verify manually</div>
+    </div>
+  </div>
+
+  <!-- Results header + match type legend -->
+  <div id="results-header" style="display:none">
+    <div class="section-header">
+      <h2>Reconciliation results</h2>
+      <button class="btn btn-secondary" onclick="loadResults()">↻ Refresh</button>
+    </div>
+    <div class="match-legend">
+      <div class="legend-item">
+        <div class="legend-dot" style="background:var(--success)"></div>
+        <span><strong>Exact match</strong> — invoice number matched directly from Xero</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#3b82f6"></div>
+        <span><strong>Semantic</strong> — AI matched by meaning; please verify before booking</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:var(--error)"></div>
+        <span><strong>Unmatched</strong> — no corresponding invoice found in Xero</span>
+      </div>
+    </div>
   </div>
 
   <!-- Results table -->
-  <div class="section-header" id="results-header" style="display:none">
-    <h2>Reconciliation results</h2>
-    <button class="btn btn-secondary" onclick="loadResults()">↻ Refresh</button>
-  </div>
-
   <div class="table-wrap" id="results-table" style="display:none">
     <table>
       <thead>
@@ -327,13 +567,39 @@
     </table>
   </div>
 
+  <!-- Empty state with onboarding guide -->
   <div class="empty-state" id="empty-state" style="display:none">
-    <div style="font-size:2rem">📊</div>
-    <p>No reconciliation results yet. Upload a bank statement to get started.</p>
+    <div class="empty-icon">📊</div>
+    <h3>No reconciliation results yet</h3>
+    <p>Upload your first bank statement above and Steve will match each transaction against your Xero invoices automatically.</p>
+    <div class="onboarding-steps">
+      <div class="onboarding-step">
+        <div class="onboarding-num">1</div>
+        <div class="onboarding-text">
+          Connect Xero
+          <small>Steve syncs your unpaid invoices from Xero every hour. Ask your admin to authorise the connection.</small>
+        </div>
+      </div>
+      <div class="onboarding-step">
+        <div class="onboarding-num">2</div>
+        <div class="onboarding-text">
+          Upload a bank statement
+          <small>PDF or Excel format. Steve extracts every transaction automatically using Claude AI.</small>
+        </div>
+      </div>
+      <div class="onboarding-step">
+        <div class="onboarding-num">3</div>
+        <div class="onboarding-text">
+          Review the results
+          <small>Exact matches are reconciled instantly. Semantic matches (AI-inferred) need your manual confirmation.</small>
+        </div>
+      </div>
+    </div>
   </div>
+
 </main>
 
-<!-- Status bar -->
+<!-- Status bar (bottom toast) -->
 <div id="status-bar">
   <div class="spinner" id="status-spinner"></div>
   <span id="status-text">Processing...</span>
@@ -346,6 +612,7 @@
 
   let authMode = 'signin'; // 'signin' | 'signup'
   let currentToken = null;
+  let isUploading = false;
 
   // ── Auth helpers ──
   async function api(path, opts = {}) {
@@ -407,6 +674,14 @@
     }
   }
 
+  // Allow Enter key to submit auth form
+  document.addEventListener('keydown', (e) => {
+    const authView = document.getElementById('auth-view');
+    if (e.key === 'Enter' && authView.style.display !== 'none') {
+      handleAuth();
+    }
+  });
+
   function signOut() {
     currentToken = null;
     localStorage.removeItem('steve_token');
@@ -424,55 +699,115 @@
   }
 
   // ── Upload ──
+  function triggerFileSelect() {
+    if (isUploading) return;
+    document.getElementById('file-input').click();
+  }
+
   async function handleFileSelect(event) {
     const file = event.target.files[0];
     if (file) await uploadFile(file);
+    // Reset so the same file can be re-selected if needed
+    event.target.value = '';
   }
 
   async function handleDrop(event) {
     event.preventDefault();
+    if (isUploading) return;
     document.getElementById('upload-zone').classList.remove('dragging');
     const file = event.dataTransfer.files[0];
     if (file) await uploadFile(file);
   }
 
+  // ── Step progress helpers ──
+  function setStep(stepId, state) {
+    const step = document.getElementById(stepId);
+    const icon = document.getElementById(stepId + '-icon');
+    step.className = 'progress-step ' + state;
+    if (state === 'active') {
+      icon.innerHTML = '<span class="step-spinner"></span>';
+    } else if (state === 'done') {
+      icon.textContent = '✓';
+    } else if (state === 'error') {
+      icon.textContent = '✗';
+    } else {
+      icon.textContent = '○';
+    }
+  }
+
+  function resetSteps() {
+    ['step-upload', 'step-extract', 'step-reconcile'].forEach(id => setStep(id, ''));
+  }
+
   async function uploadFile(file) {
     if (!file.name.match(/\.(pdf|xlsx)$/i)) {
-      showStatus('Only PDF and Excel files are supported.', false);
+      showStatus('Only PDF (.pdf) and Excel (.xlsx) files are supported.', false, false, true);
+      setTimeout(hideStatus, 5000);
       return;
     }
 
-    showStatus('Uploading and extracting transactions...');
+    isUploading = true;
+    const zone = document.getElementById('upload-zone');
+    zone.classList.add('uploading');
+    resetSteps();
+    document.getElementById('upload-progress').classList.add('visible');
+    document.getElementById('load-error').classList.remove('visible');
 
     try {
-      // 1. Create upload record
+      // Step 1: Create upload record
+      setStep('step-upload', 'active');
       const uploadRes = await api('/api/upload', {
         method: 'POST',
         body: JSON.stringify({ fileName: file.name, fileType: file.type }),
       });
+      setStep('step-upload', 'done');
 
-      // 2. Read file as text (simple approach for MVP)
+      // Step 2: Read + extract
+      // Note: readAsText works for text-based files (Excel exports).
+      // PDFs sent as raw text may have reduced extraction accuracy.
+      setStep('step-extract', 'active');
       const text = await readFileAsText(file);
-
-      // 3. Extract transactions
-      showStatus('Extracting invoice data with Claude...');
       const extractRes = await api('/api/extract', {
         method: 'POST',
         body: JSON.stringify({ uploadId: uploadRes.uploadId, text, fileName: file.name }),
       });
+      setStep('step-extract', 'done');
 
-      // 4. Run reconciliation
-      showStatus('Reconciling against Xero invoices...');
+      // Step 3: Reconcile
+      setStep('step-reconcile', 'active');
       await api('/api/reconcile', { method: 'POST' });
+      setStep('step-reconcile', 'done');
 
-      hideStatus();
-      showStatus(`Done! ${extractRes.count} transactions extracted and reconciled.`, false, true);
-      setTimeout(hideStatus, 3000);
+      const count = extractRes.count;
+      showStatus(`Done! ${count} transaction${count !== 1 ? 's' : ''} extracted and reconciled.`, false, true);
+      setTimeout(hideStatus, 4000);
+
+      setTimeout(() => {
+        document.getElementById('upload-progress').classList.remove('visible');
+        resetSteps();
+        isUploading = false;
+        zone.classList.remove('uploading');
+      }, 1500);
+
       loadResults();
+
     } catch (err) {
-      hideStatus();
-      showStatus(`Error: ${err.message}`, false, false, true);
-      setTimeout(hideStatus, 5000);
+      // Mark the currently active step as errored
+      ['step-upload', 'step-extract', 'step-reconcile'].forEach(id => {
+        if (document.getElementById(id).classList.contains('active')) {
+          setStep(id, 'error');
+        }
+      });
+
+      showStatus(`Upload failed: ${err.message}`, false, false, true);
+
+      setTimeout(() => {
+        hideStatus();
+        document.getElementById('upload-progress').classList.remove('visible');
+        resetSteps();
+        isUploading = false;
+        zone.classList.remove('uploading');
+      }, 6000);
     }
   }
 
@@ -480,30 +815,38 @@
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => resolve(e.target.result);
-      reader.onerror = reject;
+      reader.onerror = () => reject(new Error('Could not read file. Please try again.'));
       reader.readAsText(file);
     });
   }
 
   // ── Results ──
   async function loadResults() {
+    const errEl = document.getElementById('load-error');
+    errEl.classList.remove('visible');
+
     try {
       const data = await api('/api/results');
       renderResults(data);
     } catch (err) {
-      console.error('Load results error:', err);
+      document.getElementById('load-error-msg').textContent = ' ' + err.message;
+      errEl.classList.add('visible');
     }
   }
 
   function renderResults(data) {
     const { reconciliations = [], stats = {} } = data;
 
-    // Stats
-    document.getElementById('stats-row').style.display = 'grid';
-    document.getElementById('stat-total').textContent = stats.total ?? 0;
-    document.getElementById('stat-matched').textContent = stats.matched ?? 0;
-    document.getElementById('stat-unmatched').textContent = stats.unmatched ?? 0;
-    document.getElementById('stat-review').textContent = stats.review ?? 0;
+    // Only show stats when there is real data
+    if (stats.total > 0) {
+      document.getElementById('stats-row').style.display = 'grid';
+      document.getElementById('stat-total').textContent = stats.total ?? 0;
+      document.getElementById('stat-matched').textContent = stats.matched ?? 0;
+      document.getElementById('stat-unmatched').textContent = stats.unmatched ?? 0;
+      document.getElementById('stat-review').textContent = stats.review ?? 0;
+    } else {
+      document.getElementById('stats-row').style.display = 'none';
+    }
 
     if (reconciliations.length === 0) {
       document.getElementById('results-table').style.display = 'none';
@@ -512,7 +855,7 @@
       return;
     }
 
-    document.getElementById('results-header').style.display = 'flex';
+    document.getElementById('results-header').style.display = 'block';
     document.getElementById('results-table').style.display = 'block';
     document.getElementById('empty-state').style.display = 'none';
 
@@ -525,21 +868,25 @@
         : '<span class="badge badge-unmatched">Unmatched</span>';
 
       const status = r.overridden_by_user
-        ? '<span class="badge badge-review">Overridden</span>'
+        ? '<span class="badge badge-overridden">Overridden</span>'
         : r.match_type === 'unmatched'
         ? '<span class="badge badge-unmatched">No match</span>'
+        : r.match_type === 'semantic'
+        ? '<span class="badge badge-review">Needs review</span>'
         : '<span class="badge badge-matched">Reconciled</span>';
 
-      const confidence = r.confidence
+      const confidence = (r.confidence !== null && r.confidence !== undefined)
         ? (() => {
             const pct = Math.round(r.confidence * 100);
-            const cls = pct >= 80 ? '' : pct >= 60 ? 'low' : 'very-low';
+            const cls = pct >= 80 ? '' : pct >= 60 ? 'medium' : 'low';
             return `<div class="confidence-bar">
-              <div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>
-              <span style="font-size:0.75rem;color:var(--muted);width:32px;text-align:right">${pct}%</span>
+              <div class="bar-track" title="${pct >= 80 ? 'High' : pct >= 60 ? 'Medium' : 'Low'} confidence">
+                <div class="bar-fill ${cls}" style="width:${pct}%"></div>
+              </div>
+              <span class="confidence-pct">${pct}%</span>
             </div>`;
           })()
-        : '—';
+        : '<span style="color:var(--muted)">—</span>';
 
       const amt = r.bank_transaction?.amount
         ? `<span class="amount">${formatCurrency(r.bank_transaction.amount, r.bank_transaction.currency)}</span>`
@@ -550,14 +897,23 @@
         : '—';
 
       const invoice = r.invoice
-        ? `${r.invoice.invoice_number}${r.invoice.contact_name ? ` · ${r.invoice.contact_name}` : ''}`
-        : '—';
+        ? `${escapeHtml(r.invoice.invoice_number)}${r.invoice.contact_name ? ` · ${escapeHtml(r.invoice.contact_name)}` : ''}`
+        : '<span style="color:var(--muted)">—</span>';
+
+      const description = escapeHtml(
+        r.bank_transaction?.activity_description || r.bank_transaction?.invoice_number || '—'
+      );
+
+      // Show AI match reason under the invoice for semantic matches
+      const matchReason = (r.match_type === 'semantic' && r.match_reason)
+        ? `<div class="match-reason" title="${escapeHtml(r.match_reason)}">${escapeHtml(r.match_reason)}</div>`
+        : '';
 
       return `<tr>
-        <td>${r.bank_transaction?.activity_description || r.bank_transaction?.invoice_number || '—'}</td>
-        <td>${amt}</td>
-        <td>${date}</td>
-        <td style="color:var(--muted)">${invoice}</td>
+        <td>${description}</td>
+        <td style="white-space:nowrap">${amt}</td>
+        <td style="white-space:nowrap">${date}</td>
+        <td>${invoice}${matchReason}</td>
         <td>${matchBadge}</td>
         <td>${confidence}</td>
         <td>${status}</td>
@@ -565,8 +921,20 @@
     }).join('');
   }
 
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   function formatCurrency(amount, currency) {
-    const symbol = currency === 'GBP' ? '£' : currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '';
+    const symbol = currency === 'GBP' ? '£'
+      : currency === 'USD' ? '$'
+      : currency === 'EUR' ? '€'
+      : (currency ? currency + '\u00a0' : '');
     return `${symbol}${Number(amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
 
@@ -588,7 +956,6 @@
     const saved = localStorage.getItem('steve_token');
     if (saved) {
       currentToken = saved;
-      // Quick token validation — load app if valid
       api('/api/me').then((data) => {
         showApp(data.email);
       }).catch(() => {
