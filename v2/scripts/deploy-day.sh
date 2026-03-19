@@ -100,6 +100,13 @@ fi
 
 CRON_SECRET="${CRON_SECRET:-6f21707586010a6b3b17db4d20b68f655f1a130164c5f6ce1821feee871c962f}"
 
+OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+if [ -z "$OPENROUTER_API_KEY" ]; then
+  echo "  Find at: openrouter.ai → Keys → Create key"
+  read -rsp "  OPENROUTER_API_KEY (sk-or-..., hidden): " OPENROUTER_API_KEY
+  echo ""
+fi
+
 ok "Configuration collected"
 
 # ── Step 3: Link Supabase project ──────────────────────────────────────────────
@@ -141,6 +148,15 @@ supabase functions deploy auto-embed \
   --no-verify-jwt
 
 ok "Edge function 'auto-embed' deployed"
+
+# ── Step 5b: Set edge function secrets ────────────────────────────────────────
+
+step "Setting edge function secrets"
+
+supabase secrets set OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  --project-ref "$SUPABASE_PROJECT_REF"
+
+ok "Edge function secret OPENROUTER_API_KEY set"
 
 # ── Step 6: Set Vercel environment variables ───────────────────────────────────
 
