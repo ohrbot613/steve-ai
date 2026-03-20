@@ -281,21 +281,14 @@ async function pollAndReconcileForClient(supabase, clientId) {
 
   const lastPolledAt = client?.xero_last_polled_at || null;
 
-  // First run — initialize timestamp, fetch everything next cycle
+  // First run — fetch ALL invoices (no If-Modified-Since filter)
   if (!lastPolledAt) {
-    await supabase
-      .from("clients")
-      .update({ xero_last_polled_at: new Date().toISOString() })
-      .eq("id", clientId);
-
     await supabase.from("audit_log").insert({
       client_id: clientId,
       category: "xero_sync",
-      action: "first_run_initialized",
+      action: "first_run_full_sync_started",
       details: {},
     });
-
-    return { skipped: true, reason: "First run — timestamp initialized" };
   }
 
   const xeroInvoices = await fetchNewXeroInvoices(accessToken, tenantId, lastPolledAt);
