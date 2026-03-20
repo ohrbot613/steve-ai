@@ -1096,8 +1096,6 @@
       if (row) {
         const statusCell = row.cells[row.cells.length - 1];
         statusCell.innerHTML = '<span class="badge badge-matched">Reconciled</span>';
-        // Update match type badge in column 4
-        row.cells[4].innerHTML = '<span class="badge badge-matched">Exact match</span>';
       }
       // Update the review stat counter
       const statEl = document.getElementById('stat-review');
