@@ -810,6 +810,12 @@
       return;
     }
 
+    if (file.size > 4 * 1024 * 1024) {
+      showStatus('File too large — max 4MB. Try a smaller PDF or Excel file.', false, false, true);
+      setTimeout(hideStatus, 5000);
+      return;
+    }
+
     isUploading = true;
     const zone = document.getElementById('upload-zone');
     zone.classList.add('uploading');
