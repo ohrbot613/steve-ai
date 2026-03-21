@@ -90,7 +90,7 @@ create table if not exists reconciliations (
   client_id uuid references clients(id) on delete cascade not null,
   bank_transaction_id uuid references bank_transactions(id) on delete cascade,
   invoice_id uuid references invoices(id) on delete set null,
-  match_type text check (match_type in ('exact_id', 'semantic', 'manual', 'unmatched')),
+  match_type text check (match_type in ('exact_id', 'semantic', 'manual', 'unmatched', 'needs_review')),
   confidence numeric(3,2),
   match_reason text,
   -- manual override
