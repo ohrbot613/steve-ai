@@ -86,11 +86,16 @@ section "3. Required API files (v2/api/)"
 
 REQUIRED_FILES=(
   parse.js
+  extract.js
+  upload.js
   reconcile.js
   results.js
+  review.js
   health.js
+  me.js
   xero-auth.js
   xero-callback.js
+  xero-poll.js
   config.js
 )
 

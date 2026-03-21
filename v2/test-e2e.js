@@ -161,7 +161,7 @@ Return ONLY valid JSON (no markdown):
 }`;
 
   const msg = await claude.messages.create({
-    model: "claude-haiku-4-5",
+    model: "claude-opus-4-6",
     max_tokens: 1024,
     system: sysPrompt,
     messages: [{ role: "user", content: text }],
