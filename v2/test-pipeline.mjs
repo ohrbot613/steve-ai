@@ -16,7 +16,8 @@ import Anthropic from "@anthropic-ai/sdk";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const SAMPLE_PDF = "/Users/shual/Desktop/Steve/Code/30c2874b-f185-41e2-8904-f4807834137d.pdf";
+// Use path relative to repo root so any developer can run this
+const SAMPLE_PDF = new URL("../30c2874b-f185-41e2-8904-f4807834137d.pdf", import.meta.url).pathname;
 const PDF_PATH = process.argv[2] || SAMPLE_PDF;
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
