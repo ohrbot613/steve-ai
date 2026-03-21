@@ -1107,6 +1107,10 @@
       const statEl = document.getElementById('stat-review');
       const current = parseInt(statEl.textContent, 10);
       if (!isNaN(current) && current > 0) statEl.textContent = current - 1;
+      // Increment the matched stat counter (REC-264)
+      const matchedEl = document.getElementById('stat-matched');
+      const matchedCurrent = parseInt(matchedEl.textContent, 10);
+      if (!isNaN(matchedCurrent)) matchedEl.textContent = matchedCurrent + 1;
     } catch (err) {
       showStatus('Could not confirm match: ' + err.message, false, false, true);
       setTimeout(hideStatus, 4000);
