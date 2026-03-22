@@ -16,6 +16,14 @@ export default async function handler(req, res) {
 
   const { fileName, fileType } = req.body || {};
   if (!fileName) return res.status(400).json({ error: "fileName is required" });
+  if (typeof fileName !== "string" || fileName.length > 255) {
+    return res.status(400).json({ error: "fileName must be a string under 255 characters" });
+  }
+  const ALLOWED_EXTENSIONS = [".csv", ".xlsx", ".xls", ".pdf"];
+  const ext = fileName.slice(fileName.lastIndexOf(".")).toLowerCase();
+  if (!ALLOWED_EXTENSIONS.includes(ext)) {
+    return res.status(400).json({ error: "Unsupported file type — use CSV, XLSX, or PDF" });
+  }
 
   const { data, error } = await supabase
     .from("uploads")

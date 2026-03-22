@@ -84,6 +84,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Failed to read request body" });
   }
 
+  // Server-side size guard — 4.5MB to match Vercel's hard limit and frontend warning
+  const MAX_BYTES = 4.5 * 1024 * 1024;
+  if (rawBuf.length > MAX_BYTES) {
+    return res.status(413).json({ error: "File too large — maximum size is 4MB" });
+  }
+
   const parts = parseMultipart(rawBuf, boundaryMatch[1]);
   const filePart = parts.find((p) => p.headers.includes('name="file"'));
   if (!filePart) {
