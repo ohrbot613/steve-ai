@@ -6,7 +6,7 @@ Estimated time: 45–60 minutes (most of it is waiting for deploys).
 
 ---
 
-## Before You Start — Gather These 5 Things
+## Before You Start — Gather These 6 Things
 
 You will need all of these before running the deploy script. Get them now.
 
@@ -17,8 +17,11 @@ You will need all of these before running the deploy script. Get them now.
 | **Supabase Service Role Key** | Same page → "service_role" key (keep this secret) |
 | **Xero Client Secret** | developer.xero.com → App management → Steve app → Client secret |
 | **Anthropic API Key** | console.anthropic.com → API Keys (starts with `sk-ant-`) |
+| **OpenRouter API Key** | openrouter.ai → Keys (starts with `sk-or-v1-`) — used by the auto-embed edge function |
 
-Note: XERO_CLIENT_ID is already hardcoded (`2AB441B1BB814413ABA1925DC2B5BD3B`). CRON_SECRET is also pre-set. You only need the 5 items above.
+Note: XERO_CLIENT_ID is already hardcoded (`2AB441B1BB814413ABA1925DC2B5BD3B`). CRON_SECRET is also pre-set. You only need the 6 items above.
+
+**Also required before deploy:** Run `supabase login` in Terminal. The script will fail at the link step if you are not logged into the Supabase CLI.
 
 ---
 
@@ -46,7 +49,7 @@ Common issues:
 bash v2/scripts/deploy-day.sh
 ```
 
-The script will ask you for the 5 items from the table above, one at a time.
+The script will ask you for the 6 items from the table above, one at a time.
 It will then:
 1. Link your Supabase project
 2. Push the database schema and migrations
