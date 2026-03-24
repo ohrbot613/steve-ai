@@ -2,6 +2,7 @@ export default function handler(req, res) {
   const REQUIRED_ENV = [
     "ANTHROPIC_API_KEY",
     "SUPABASE_URL",
+    "SUPABASE_ANON_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
   ];
 

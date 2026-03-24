@@ -32,7 +32,7 @@ const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 async function claudeCall(content, systemPrompt) {
   const msg = await client.messages.create({
-    model: "claude-opus-4-6",
+    model: "claude-3-5-sonnet-20241022",
     max_tokens: 4096,
     system: systemPrompt,
     messages: [{ role: "user", content: content || "Extract from the document above." }],
