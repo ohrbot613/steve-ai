@@ -19,7 +19,7 @@ You will need all of these before running the deploy script. Get them now.
 | **Anthropic API Key** | console.anthropic.com → API Keys (starts with `sk-ant-`) |
 | **OpenRouter API Key** | openrouter.ai → Keys (starts with `sk-or-v1-`) — used by the auto-embed edge function |
 
-Note: XERO_CLIENT_ID (`2AB441B1BB814413ABA1925DC2B5BD3B`) MUST be set as a Vercel environment variable — it is not hardcoded in the deployed code. CRON_SECRET is also pre-set. You only need the 6 items above.
+Note: `XERO_CLIENT_ID` and `CRON_SECRET` are automatically set by the deploy script (`deploy-day.sh`) — you do not need to gather them manually. If you ever set env vars manually through the Vercel dashboard instead of running the script, add `XERO_CLIENT_ID=2AB441B1BB814413ABA1925DC2B5BD3B` manually as well (verify this still matches your app at developer.xero.com).
 
 **Also required before deploy:** Run `supabase login` in Terminal. The script will fail at the link step if you are not logged into the Supabase CLI.
 
