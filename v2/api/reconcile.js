@@ -1,7 +1,19 @@
 // api/reconcile.js — Vercel Serverless Function
 // Runs reconciliation for a client: exact-ID matching first, then semantic fallback
+//
+// REC-313: Added supplier embedding fusion for semantic step.
+// When a bank transaction has multiple potential invoice IDs (OCR noise variants),
+// we embed each variant separately and average + L2-normalise the vectors before
+// calling match_invoices(). This is ported from steve-agent-2.0's
+// averageL2NormalizedEmbeddings technique and gives a more robust query vector
+// than relying on a single pre-stored embedding from a potentially noisy source.
 
 import { createClient } from "@supabase/supabase-js";
+import {
+  embedTexts,
+  averageL2NormalizedEmbeddings,
+  buildTransactionEmbeddingText,
+} from "./lib/embeddings.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Exact ID matching (ported from xeroPollingService.js)
@@ -50,7 +62,7 @@ async function reconcileClient(supabase, clientId) {
   // Fetch all unreconciled bank transactions
   const { data: transactions, error: txErr } = await supabase
     .from("bank_transactions")
-    .select("id, invoice_number, potential_invoice_ids, embedding, amount")
+    .select("id, invoice_number, potential_invoice_ids, activity_description, embedding, amount")
     .eq("client_id", clientId)
     .not(
       "id",
@@ -143,29 +155,68 @@ async function reconcileClient(supabase, clientId) {
     }
 
     // Step 2: Semantic match via pgvector
-    if (tx.embedding) {
-      const { data: semanticMatches_data, error: semErr } = await supabase.rpc(
-        "match_invoices",
-        {
-          query_embedding: tx.embedding,
-          client_id_filter: clientId,
-          match_threshold: 0.75,
-          match_count: 1,
-        }
-      );
+    // REC-313: Use embedding fusion — embed all potential invoice ID variants
+    // separately and average the vectors before querying. Falls back to the
+    // pre-stored tx.embedding if the OpenRouter API key is unavailable.
+    {
+      let queryEmbedding = tx.embedding ?? null;
 
-      if (!semErr && semanticMatches_data?.length > 0) {
-        const match = semanticMatches_data[0];
-        reconciliationRows.push({
-          client_id: clientId,
-          bank_transaction_id: tx.id,
-          invoice_id: match.id,
-          match_type: "semantic",
-          confidence: Math.round(match.similarity * 100) / 100,
-          match_reason: `Semantic similarity: ${(match.similarity * 100).toFixed(1)}% — ${match.invoice_number} / ${match.contact_name}`,
-        });
-        semanticMatches++;
-        continue;
+      // Build variant texts from all potential IDs + core transaction fields
+      const potentialIds = Array.isArray(tx.potential_invoice_ids) && tx.potential_invoice_ids.length > 0
+        ? tx.potential_invoice_ids
+        : (tx.invoice_number ? [tx.invoice_number] : []);
+
+      if (potentialIds.length > 0 && process.env.OPENROUTER_API_KEY) {
+        try {
+          // Embed each variant text (number only, then full context)
+          const variantTexts = [
+            // Number-only variants (mirrors how invoices are stored: invoice_number is primary signal)
+            ...potentialIds.map((id) => String(id).trim()).filter(Boolean),
+            // Full context variant (invoice_number + activity_description)
+            buildTransactionEmbeddingText({
+              invoiceNumber: tx.invoice_number,
+              activityDescription: tx.activity_description,
+            }),
+          ].filter((t) => t.length > 0);
+
+          // Deduplicate
+          const uniqueTexts = [...new Set(variantTexts)];
+
+          if (uniqueTexts.length > 0) {
+            const vectors = await embedTexts(uniqueTexts);
+            const fused = averageL2NormalizedEmbeddings(vectors);
+            if (fused) queryEmbedding = fused;
+          }
+        } catch (fusionErr) {
+          // Non-fatal: fall back to pre-stored embedding
+          console.warn("[Reconcile] Embedding fusion failed, using stored embedding:", fusionErr.message);
+        }
+      }
+
+      if (queryEmbedding) {
+        const { data: semanticMatches_data, error: semErr } = await supabase.rpc(
+          "match_invoices",
+          {
+            query_embedding: queryEmbedding,
+            client_id_filter: clientId,
+            match_threshold: 0.75,
+            match_count: 1,
+          }
+        );
+
+        if (!semErr && semanticMatches_data?.length > 0) {
+          const match = semanticMatches_data[0];
+          reconciliationRows.push({
+            client_id: clientId,
+            bank_transaction_id: tx.id,
+            invoice_id: match.id,
+            match_type: "semantic",
+            confidence: Math.round(match.similarity * 100) / 100,
+            match_reason: `Semantic similarity: ${(match.similarity * 100).toFixed(1)}% — ${match.invoice_number} / ${match.contact_name}`,
+          });
+          semanticMatches++;
+          continue;
+        }
       }
     }
 

@@ -2,11 +2,40 @@
 // Accepts a raw PDF file upload (multipart/form-data, field "file") and
 // returns extracted plain text. Called by the frontend before /api/extract
 // so that PDF content reaches Claude as readable text, not garbled binary.
+//
+// REC-313: Added scanned-PDF fallback.
+// If pdf-parse returns < PDF_VISION_TEXT_THRESHOLD chars (likely a scanned/image
+// PDF with no text layer), the PDF is sent to Claude's vision API for OCR and the
+// resulting Markdown is returned instead.  This mirrors the logic in
+// steve-agent-2.0/server/controllers/toolsController.js (renderPdfPagesAsDataUrls
+// + openrouterTranscribeImageToMarkdown) but uses the Claude API already present
+// in v2, with no additional dependencies.
+//
+// Claude accepts PDF documents directly in the messages API (model claude-3-5-sonnet,
+// "document" content block type) — no need to manually render pages as images.
 
 import { createClient } from "@supabase/supabase-js";
+import Anthropic from "@anthropic-ai/sdk";
 
 // Vercel disables the default body parser so we can stream the raw bytes
 export const config = { api: { bodyParser: false } };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+// If pdf-parse yields fewer characters than this, we treat the PDF as a
+// scanned image and fall back to Claude vision OCR.
+// ~200 chars is enough for a few words of boilerplate but unlikely to cover
+// a real invoice — intentionally conservative so we don't miss sparse PDFs.
+const PDF_VISION_TEXT_THRESHOLD = 200;
+
+// Server-side size guard — 4.5MB to match Vercel's hard limit and frontend warning
+const MAX_BYTES = 4.5 * 1024 * 1024;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Read raw body as a Buffer
 function rawBody(req) {
@@ -30,7 +59,6 @@ function parseMultipart(buffer, boundary) {
     const partStart = idx + boundaryBuf.length;
     if (buffer[partStart] === 0x2d && buffer[partStart + 1] === 0x2d) break; // "--"
 
-    const CRLF = Buffer.from("\r\n");
     const headerEnd = buffer.indexOf(Buffer.from("\r\n\r\n"), partStart);
     if (headerEnd === -1) break;
 
@@ -47,6 +75,67 @@ function parseMultipart(buffer, boundary) {
 
   return parts;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Claude vision OCR fallback for scanned PDFs (REC-313)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Send a PDF buffer to Claude as a document content block and request full OCR.
+ * Claude 3.5 Sonnet supports PDF documents natively (up to ~32 pages per call).
+ * Returns the transcribed Markdown text, or throws on API error.
+ *
+ * @param {Buffer} pdfBuf
+ * @returns {Promise<string>}
+ */
+async function claudeVisionOcrPdf(pdfBuf) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error("ANTHROPIC_API_KEY not set — cannot run vision OCR");
+  }
+
+  const claude = new Anthropic({ apiKey });
+  const base64Pdf = pdfBuf.toString("base64");
+
+  const msg = await claude.messages.create({
+    model: "claude-3-5-sonnet-20241022",
+    max_tokens: 4096,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: base64Pdf,
+            },
+          },
+          {
+            type: "text",
+            text: [
+              "You are a document transcription assistant performing full OCR.",
+              "Transcribe every piece of readable text from this document completely and verbatim.",
+              "Do not summarise, paraphrase, or skip any text.",
+              "Include headers, footers, table cells, labels, amounts, dates, invoice numbers, and all fine print.",
+              "Return the content as Markdown only — no preamble, no explanation.",
+              "Use Markdown tables for tabular layouts so no cell text is dropped.",
+              "Preserve reading order top-to-bottom, left-to-right.",
+              "If there is no readable text at all, reply exactly with: (no text detected)",
+            ].join(" "),
+          },
+        ],
+      },
+    ],
+  });
+
+  return msg.content[0]?.text ?? "";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vercel handler
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -80,12 +169,10 @@ export default async function handler(req, res) {
   let rawBuf;
   try {
     rawBuf = await rawBody(req);
-  } catch (err) {
+  } catch {
     return res.status(400).json({ error: "Failed to read request body" });
   }
 
-  // Server-side size guard — 4.5MB to match Vercel's hard limit and frontend warning
-  const MAX_BYTES = 4.5 * 1024 * 1024;
   if (rawBuf.length > MAX_BYTES) {
     return res.status(413).json({ error: "File too large — maximum size is 4MB" });
   }
@@ -98,6 +185,7 @@ export default async function handler(req, res) {
 
   // ── Extract text ─────────────────────────────────────────────────────────────
   let text;
+  let ocrMethod = "text";
 
   // Check if it's a PDF by magic bytes (%PDF)
   const isPdf =
@@ -107,18 +195,42 @@ export default async function handler(req, res) {
     filePart.data[3] === 0x46;
 
   if (isPdf) {
+    // Step 1: try standard text extraction
+    let pdfText = "";
     try {
       const { default: pdfParse } = await import("pdf-parse/lib/pdf-parse.js");
       const parsed = await pdfParse(filePart.data);
-      text = parsed.text;
+      pdfText = parsed.text ?? "";
     } catch (err) {
       console.error("[Parse] pdf-parse error:", err.message);
-      return res.status(500).json({ error: "PDF parsing failed: " + err.message });
+      // Don't fail here — fall through to vision OCR
+    }
+
+    // Step 2: if text layer is sparse/empty, fall back to Claude vision OCR (REC-313)
+    if (pdfText.trim().length < PDF_VISION_TEXT_THRESHOLD) {
+      console.log(
+        `[Parse] PDF text layer has ${pdfText.trim().length} chars (< ${PDF_VISION_TEXT_THRESHOLD}) — falling back to Claude vision OCR`
+      );
+      try {
+        text = await claudeVisionOcrPdf(filePart.data);
+        ocrMethod = "vision";
+      } catch (visionErr) {
+        console.error("[Parse] Claude vision OCR failed:", visionErr.message);
+        // If vision also fails, return whatever text we got (may be empty)
+        text = pdfText;
+        ocrMethod = "text_fallback";
+      }
+    } else {
+      text = pdfText;
     }
   } else {
-    // Non-PDF (e.g. Excel exported as text): return as UTF-8 string
+    // Non-PDF (e.g. Excel exported as text, CSV): return as UTF-8 string
     text = filePart.data.toString("utf-8");
   }
 
-  return res.status(200).json({ text: text.trim() });
+  return res.status(200).json({
+    text: text.trim(),
+    // ocrMethod surfaced for debugging — callers can ignore this field
+    ocrMethod,
+  });
 }
