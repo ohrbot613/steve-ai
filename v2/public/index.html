@@ -438,6 +438,47 @@
     }
     .btn-override:hover { background: var(--error); color: #fff; }
 
+    /* ── Batch upload queue (REC-316) ── */
+    .batch-queue {
+      margin-top: 16px;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      text-align: left;
+      max-width: 480px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .batch-queue.visible { display: flex; }
+    .queue-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.8125rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+    }
+    .queue-item-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--text);
+    }
+    .queue-item-status {
+      font-size: 0.75rem;
+      font-weight: 500;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .queue-item-status.pending  { color: var(--muted); }
+    .queue-item-status.processing { color: var(--accent-light); }
+    .queue-item-status.done    { color: var(--success); }
+    .queue-item-status.failed  { color: var(--error); }
+    .queue-item-icon { flex-shrink: 0; width: 16px; text-align: center; }
+
     /* ── Responsive ── */
     @media (max-width: 768px) {
       header { padding: 12px 16px; }
@@ -518,9 +559,9 @@
     <strong>Upload bank statement</strong>
     <p>Drag and drop or click to browse</p>
     <p class="file-types">Supported formats: PDF, Excel (.xlsx)</p>
-    <input type="file" id="file-input" accept=".pdf,.xlsx" style="display:none" onchange="handleFileSelect(event)" />
+    <input type="file" id="file-input" accept=".pdf,.xlsx" multiple style="display:none" onchange="handleFileSelect(event)" />
 
-    <!-- Inline step progress -->
+    <!-- Inline step progress (single-file mode) -->
     <div class="upload-progress" id="upload-progress">
       <div class="progress-steps">
         <div class="progress-step" id="step-upload">
@@ -537,6 +578,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Batch queue (REC-316): shown when multiple files are selected -->
+    <div class="batch-queue" id="batch-queue"></div>
   </div>
 
   <!-- Stats row (only shown when data exists) -->
@@ -769,18 +813,109 @@
   }
 
   async function handleFileSelect(event) {
-    const file = event.target.files[0];
-    if (file) await uploadFile(file);
-    // Reset so the same file can be re-selected if needed
+    const files = Array.from(event.target.files);
+    // Reset so the same file(s) can be re-selected if needed
     event.target.value = '';
+    if (files.length === 0) return;
+    if (files.length === 1) {
+      await uploadFile(files[0]);
+    } else {
+      await uploadBatch(files);
+    }
   }
 
   async function handleDrop(event) {
     event.preventDefault();
     if (isUploading) return;
     document.getElementById('upload-zone').classList.remove('dragging');
-    const file = event.dataTransfer.files[0];
-    if (file) await uploadFile(file);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length === 0) return;
+    if (files.length === 1) {
+      await uploadFile(files[0]);
+    } else {
+      await uploadBatch(files);
+    }
+  }
+
+  // ── Batch upload queue (REC-316) ──
+  // Processes multiple files sequentially, one at a time, through the existing
+  // single-file uploadFile() path.  Shows a per-file status list in the UI.
+  async function uploadBatch(files) {
+    if (isUploading) return;
+    isUploading = true;
+
+    const zone = document.getElementById('upload-zone');
+    zone.classList.add('uploading');
+    document.getElementById('upload-progress').classList.remove('visible');
+
+    // Build the queue DOM
+    const queueEl = document.getElementById('batch-queue');
+    queueEl.innerHTML = '';
+    queueEl.classList.add('visible');
+
+    const items = files.map((file, i) => {
+      const div = document.createElement('div');
+      div.className = 'queue-item';
+      div.id = `queue-item-${i}`;
+      div.innerHTML = `
+        <span class="queue-item-icon" id="qi-icon-${i}">○</span>
+        <span class="queue-item-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+        <span class="queue-item-status pending" id="qi-status-${i}">Pending</span>`;
+      queueEl.appendChild(div);
+      return div;
+    });
+
+    function setQueueItemState(i, state) {
+      const iconEl   = document.getElementById(`qi-icon-${i}`);
+      const statusEl = document.getElementById(`qi-status-${i}`);
+      statusEl.className = `queue-item-status ${state}`;
+      if (state === 'processing') {
+        iconEl.innerHTML = '<span class="step-spinner"></span>';
+        statusEl.textContent = 'Processing…';
+      } else if (state === 'done') {
+        iconEl.textContent = '✓';
+        statusEl.textContent = 'Done';
+      } else if (state === 'failed') {
+        iconEl.textContent = '✗';
+        statusEl.textContent = 'Failed';
+      } else {
+        iconEl.textContent = '○';
+        statusEl.textContent = 'Pending';
+      }
+    }
+
+    let doneCount = 0, failedCount = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      setQueueItemState(i, 'processing');
+      try {
+        // Temporarily lift the isUploading guard so uploadFile() can run
+        isUploading = false;
+        await uploadFile(files[i]);
+        isUploading = true;
+        setQueueItemState(i, 'done');
+        doneCount++;
+      } catch (_) {
+        // uploadFile() already shows its own error status; mark the item failed
+        setQueueItemState(i, 'failed');
+        failedCount++;
+        isUploading = true;
+      }
+    }
+
+    // All done — update status bar summary and clean up
+    const msg = failedCount === 0
+      ? `Batch complete — ${doneCount} file${doneCount !== 1 ? 's' : ''} processed.`
+      : `Batch done: ${doneCount} succeeded, ${failedCount} failed.`;
+    showStatus(msg, false, failedCount === 0, failedCount > 0);
+    setTimeout(hideStatus, 5000);
+
+    setTimeout(() => {
+      queueEl.classList.remove('visible');
+      queueEl.innerHTML = '';
+      zone.classList.remove('uploading');
+      isUploading = false;
+    }, 2000);
   }
 
   // ── Step progress helpers ──
