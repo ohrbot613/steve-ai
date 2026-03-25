@@ -865,7 +865,7 @@
       return div;
     });
 
-    function setQueueItemState(i, state) {
+    function setQueueItemState(i, state, errorMsg) {
       const iconEl   = document.getElementById(`qi-icon-${i}`);
       const statusEl = document.getElementById(`qi-status-${i}`);
       statusEl.className = `queue-item-status ${state}`;
@@ -877,7 +877,8 @@
         statusEl.textContent = 'Done';
       } else if (state === 'failed') {
         iconEl.textContent = '✗';
-        statusEl.textContent = 'Failed';
+        statusEl.textContent = errorMsg ? `Failed: ${errorMsg}` : 'Failed';
+        if (errorMsg) statusEl.title = errorMsg;
       } else {
         iconEl.textContent = '○';
         statusEl.textContent = 'Pending';
@@ -889,17 +890,12 @@
     for (let i = 0; i < files.length; i++) {
       setQueueItemState(i, 'processing');
       try {
-        // Temporarily lift the isUploading guard so uploadFile() can run
-        isUploading = false;
-        await uploadFile(files[i]);
-        isUploading = true;
+        await uploadFile(files[i], { batchMode: true });
         setQueueItemState(i, 'done');
         doneCount++;
-      } catch (_) {
-        // uploadFile() already shows its own error status; mark the item failed
-        setQueueItemState(i, 'failed');
+      } catch (err) {
+        setQueueItemState(i, 'failed', err.message);
         failedCount++;
-        isUploading = true;
       }
     }
 
@@ -938,39 +934,45 @@
     ['step-upload', 'step-extract', 'step-reconcile'].forEach(id => setStep(id, ''));
   }
 
-  async function uploadFile(file) {
+  // batchMode: when true, skip single-file UI manipulation and re-throw errors
+  // so uploadBatch() can detect failures and track per-file status correctly.
+  async function uploadFile(file, { batchMode = false } = {}) {
     if (!file.name.match(/\.(pdf|xlsx)$/i)) {
+      if (batchMode) throw new Error('Unsupported file type (PDF or Excel only)');
       showStatus('Only PDF (.pdf) and Excel (.xlsx) files are supported.', false, false, true);
       setTimeout(hideStatus, 5000);
       return;
     }
 
     if (file.size > 4 * 1024 * 1024) {
+      if (batchMode) throw new Error('File too large — max 4MB');
       showStatus('File too large — max 4MB. Try a smaller PDF or Excel file.', false, false, true);
       setTimeout(hideStatus, 5000);
       return;
     }
 
-    isUploading = true;
     const zone = document.getElementById('upload-zone');
-    zone.classList.add('uploading');
-    resetSteps();
-    document.getElementById('upload-progress').classList.add('visible');
-    document.getElementById('load-error').classList.remove('visible');
+    if (!batchMode) {
+      isUploading = true;
+      zone.classList.add('uploading');
+      resetSteps();
+      document.getElementById('upload-progress').classList.add('visible');
+      document.getElementById('load-error').classList.remove('visible');
+    }
 
     try {
       // Step 1: Create upload record
-      setStep('step-upload', 'active');
+      if (!batchMode) setStep('step-upload', 'active');
       const uploadRes = await api('/api/upload', {
         method: 'POST',
         body: JSON.stringify({ fileName: file.name, fileType: file.type }),
       });
-      setStep('step-upload', 'done');
+      if (!batchMode) setStep('step-upload', 'done');
 
       // Step 2: Parse + extract
       // PDFs: upload raw bytes to /api/parse for server-side text extraction.
       // Non-PDFs (Excel exports): read as text client-side (no garbling risk).
-      setStep('step-extract', 'active');
+      if (!batchMode) setStep('step-extract', 'active');
       let text;
       if (file.name.toLowerCase().endsWith('.pdf')) {
         const form = new FormData();
@@ -994,28 +996,34 @@
         method: 'POST',
         body: JSON.stringify({ uploadId: uploadRes.uploadId, text, fileName: file.name }),
       });
-      setStep('step-extract', 'done');
+      if (!batchMode) setStep('step-extract', 'done');
 
       // Step 3: Reconcile
-      setStep('step-reconcile', 'active');
+      if (!batchMode) setStep('step-reconcile', 'active');
       await api('/api/reconcile', { method: 'POST' });
-      setStep('step-reconcile', 'done');
+      if (!batchMode) setStep('step-reconcile', 'done');
 
       const count = extractRes.count;
-      showStatus(`Done! ${count} transaction${count !== 1 ? 's' : ''} extracted and reconciled.`, false, true);
-      setTimeout(hideStatus, 4000);
-
-      setTimeout(() => {
-        document.getElementById('upload-progress').classList.remove('visible');
-        resetSteps();
-        isUploading = false;
-        zone.classList.remove('uploading');
-      }, 1500);
+      if (!batchMode) {
+        showStatus(`Done! ${count} transaction${count !== 1 ? 's' : ''} extracted and reconciled.`, false, true);
+        setTimeout(hideStatus, 4000);
+        setTimeout(() => {
+          document.getElementById('upload-progress').classList.remove('visible');
+          resetSteps();
+          isUploading = false;
+          zone.classList.remove('uploading');
+        }, 1500);
+      }
 
       loadResults();
 
     } catch (err) {
-      // Mark the currently active step as errored
+      if (batchMode) {
+        // Let uploadBatch() handle UI and state — just propagate the error
+        throw err;
+      }
+
+      // Single-file mode: mark the active step as errored and show status
       ['step-upload', 'step-extract', 'step-reconcile'].forEach(id => {
         if (document.getElementById(id).classList.contains('active')) {
           setStep(id, 'error');
