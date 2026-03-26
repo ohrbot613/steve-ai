@@ -594,6 +594,7 @@
       <div class="label">Matched</div>
       <div class="value" id="stat-matched">—</div>
       <div class="sublabel" id="stat-matched-amount">exact invoice ID</div>
+      <div class="sublabel" id="stat-overridden" style="color:var(--muted);font-size:0.75rem"></div>
     </div>
     <div class="stat-card unmatched">
       <div class="label">Unmatched</div>
@@ -612,6 +613,7 @@
     <div class="section-header">
       <h2>Reconciliation results</h2>
       <button class="btn btn-secondary" onclick="loadResults()">↻ Refresh</button>
+      <button class="btn btn-secondary" onclick="exportCSV()" title="Download all results as CSV">⬇ Export CSV</button>
     </div>
     <div class="match-legend">
       <div class="legend-item">
@@ -757,7 +759,11 @@
       currentToken = data.access_token;
       localStorage.setItem('steve_token', currentToken);
 
+      // Show app immediately with banner hidden, then fetch actual Xero status (REC-328)
       showApp(email, false);
+      api('/api/me').then((meData) => {
+        document.getElementById('xero-banner').style.display = meData.xeroConnected ? 'none' : 'flex';
+      }).catch(() => {});
     } catch (err) {
       errEl.textContent = err.message;
       btn.disabled = false;
@@ -1076,6 +1082,37 @@
     });
   }
 
+  // ── CSV Export (REC-330) ──
+  function exportCSV() {
+    const reconciliations = window._reconciliations || [];
+    if (!reconciliations.length) return;
+    const headers = ['Transaction Date', 'Description', 'Amount', 'Currency', 'Match Type', 'Invoice Number', 'Contact', 'Override Note', 'Status'];
+    const rows = reconciliations.map((r) => {
+      const bt = r.bank_transaction || {};
+      const inv = r.invoice || {};
+      const status = r.overridden_by_user ? 'Overridden' : r.match_type === 'exact_id' || r.match_type === 'manual' ? 'Matched' : r.match_type === 'unmatched' ? 'Unmatched' : 'Needs Review';
+      return [
+        bt.transaction_date || '',
+        `"${(bt.activity_description || '').replace(/"/g, '""')}"`,
+        bt.amount || '',
+        bt.currency || '',
+        r.match_type || '',
+        inv.invoice_number || bt.invoice_number || '',
+        `"${(inv.contact_name || '').replace(/"/g, '""')}"`,
+        `"${(r.override_note || '').replace(/"/g, '""')}"`,
+        status,
+      ].join(',');
+    });
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `steve-reconciliation-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   // ── Results ──
   async function loadResults() {
     const errEl = document.getElementById('load-error');
@@ -1100,6 +1137,11 @@
       document.getElementById('stat-matched').textContent = stats.matched ?? 0;
       document.getElementById('stat-unmatched').textContent = stats.unmatched ?? 0;
       document.getElementById('stat-review').textContent = stats.review ?? 0;
+      // Show overridden sub-count under matched (REC-329)
+      const overrideEl = document.getElementById('stat-overridden');
+      if (overrideEl) overrideEl.textContent = stats.overridden > 0 ? ` (${stats.overridden} overridden)` : '';
+      // Store reconciliations for CSV export (REC-330)
+      window._reconciliations = reconciliations;
 
       // Compute monetary totals from reconciliations
       const currency = reconciliations[0]?.bank_transaction?.currency || 'GBP';

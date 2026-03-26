@@ -29,13 +29,14 @@ export default async function handler(req, res) {
     `)
     .eq("client_id", user.id)
     .order("created_at", { ascending: false })
-    .limit(200);
+    .limit(2000);
 
   if (error) return res.status(500).json({ error: error.message });
 
   const total = reconciliations.length;
+  const overridden = reconciliations.filter((r) => r.overridden_by_user).length;
   const matched = reconciliations.filter(
-    (r) => r.match_type === "exact_id" || r.match_type === "manual"
+    (r) => r.match_type === "exact_id" || r.match_type === "manual" || r.overridden_by_user
   ).length;
   const unmatched = reconciliations.filter((r) => r.match_type === "unmatched").length;
   const review = reconciliations.filter(
@@ -44,6 +45,6 @@ export default async function handler(req, res) {
 
   return res.json({
     reconciliations,
-    stats: { total, matched, unmatched, review },
+    stats: { total, matched, unmatched, review, overridden },
   });
 }
