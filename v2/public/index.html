@@ -489,10 +489,22 @@
     @media (max-width: 480px) {
       .stat-card { padding: 14px; }
       .stat-card .value { font-size: 1.4rem; }
+      /* REC-336: upload zone — reduce padding and ensure full width on small screens */
+      .upload-zone {
+        width: 100%;
+        padding: 24px 16px;
+        min-height: 120px;
+      }
     }
   </style>
   <!-- SheetJS: client-side Excel (.xlsx/.xls) → CSV conversion (REC-121) -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- PostHog analytics (REC-335) — key injected at runtime via /api/config -->
+  <script>
+    !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.people.toString()+" (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+    // Key is injected at runtime — init is deferred until /api/config resolves (see init() below)
+    window.__POSTHOG_KEY__ = window.__POSTHOG_KEY__ || '';
+  </script>
 </head>
 <body>
 
@@ -1365,6 +1377,10 @@
       const config = await configRes.json();
       if (config.supabaseUrl) SUPABASE_URL = config.supabaseUrl;
       if (config.supabaseAnonKey) SUPABASE_ANON_KEY = config.supabaseAnonKey;
+      // REC-335: init PostHog once we have the key
+      if (config.posthogKey && window.posthog) {
+        posthog.init(config.posthogKey, { api_host: 'https://app.posthog.com' });
+      }
     } catch (e) { console.warn('Config fetch failed, using fallback:', e); }
 
     // Handle Xero OAuth callback redirects

@@ -12,5 +12,10 @@ export default function handler(req, res) {
 
   // Cache for 1 hour — these values don't change between deployments
   res.setHeader("Cache-Control", "public, max-age=3600");
-  return res.json({ supabaseUrl: url, supabaseAnonKey: anonKey });
+  return res.json({
+    supabaseUrl: url,
+    supabaseAnonKey: anonKey,
+    // REC-335: PostHog analytics key (public/anon, safe for browser)
+    posthogKey: process.env.NEXT_PUBLIC_POSTHOG_KEY || null,
+  });
 }
