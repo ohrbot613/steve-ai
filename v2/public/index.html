@@ -666,6 +666,10 @@
         <span><strong>Semantic</strong> — AI matched by meaning; please verify before booking</span>
       </div>
       <div class="legend-item">
+        <div class="legend-dot" style="background:var(--warning)"></div>
+        <span><strong>Needs review</strong> — invoice ID matched but amount differs; confirm manually</span>
+      </div>
+      <div class="legend-item">
         <div class="legend-dot" style="background:var(--error)"></div>
         <span><strong>Unmatched</strong> — no corresponding invoice found in Xero</span>
       </div>
@@ -1261,11 +1265,16 @@
         ? (() => {
             const pct = Math.round(r.confidence * 100);
             const cls = pct >= 80 ? '' : pct >= 60 ? 'medium' : 'low';
+            const tooltipText = pct >= 80
+              ? `${pct}% — High confidence. Safe to book.`
+              : pct >= 60
+              ? `${pct}% — Medium confidence. Review the matched invoice before booking.`
+              : `${pct}% — Low confidence. Verify manually before recording payment.`;
             return `<div class="confidence-bar">
-              <div class="bar-track" title="${pct >= 80 ? 'High' : pct >= 60 ? 'Medium' : 'Low'} confidence">
+              <div class="bar-track" title="${tooltipText}">
                 <div class="bar-fill ${cls}" style="width:${pct}%"></div>
               </div>
-              <span class="confidence-pct">${pct}%</span>
+              <span class="confidence-pct" title="${tooltipText}">${pct}%</span>
             </div>`;
           })()
         : '<span style="color:var(--muted)">—</span>';

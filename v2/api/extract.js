@@ -370,6 +370,11 @@ export default async function handler(req, res) {
   if (!uploadId || !text) {
     return res.status(400).json({ error: "uploadId and text are required" });
   }
+  // Guard against extremely large payloads — 500 KB is well above any real bank statement
+  // but prevents accidental or malicious requests from burning Claude API budget.
+  if (typeof text !== "string" || text.length > 500_000) {
+    return res.status(400).json({ error: "text payload too large — max 500 KB" });
+  }
 
   // Authenticate via Supabase JWT
   const token = req.headers.authorization?.replace("Bearer ", "");
