@@ -1279,7 +1279,7 @@
       // Compute monetary totals from reconciliations
       const currency = reconciliations[0]?.bank_transaction?.currency || 'GBP';
       const matchedAmt = reconciliations
-        .filter(r => r.match_type === 'exact_id' && !r.overridden_by_user)
+        .filter(r => r.match_type === 'exact_id' || r.match_type === 'manual' || r.overridden_by_user)
         .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
       const unmatchedAmt = reconciliations
         .filter(r => r.match_type === 'unmatched')

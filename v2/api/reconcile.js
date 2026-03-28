@@ -57,6 +57,7 @@ async function reconcileClient(supabase, clientId) {
   const startTime = Date.now();
   let exactMatches = 0;
   let semanticMatches = 0;
+  let needsReviewMatches = 0;
   let unmatched = 0;
 
   // Fetch all unreconciled bank transactions
@@ -71,7 +72,7 @@ async function reconcileClient(supabase, clientId) {
     );
 
   if (txErr) throw new Error(`Fetch transactions failed: ${txErr.message}`);
-  if (!transactions?.length) return { exactMatches, semanticMatches, unmatched };
+  if (!transactions?.length) return { exactMatches, semanticMatches, needsReviewMatches, unmatched };
 
   // Fetch all invoices for this client (unpaid + paid — REC-122)
   // Including paid invoices prevents false "Unmatched" for invoices settled before statement upload.
@@ -84,7 +85,7 @@ async function reconcileClient(supabase, clientId) {
   if (invErr) throw new Error(`Fetch invoices failed: ${invErr.message}`);
   if (!invoices?.length) {
     unmatched = transactions.length;
-    return { exactMatches, semanticMatches, unmatched };
+    return { exactMatches, semanticMatches, needsReviewMatches, unmatched };
   }
 
   const reconciliationRows = [];
@@ -124,7 +125,7 @@ async function reconcileClient(supabase, clientId) {
             confidence: Math.round(bestScore * 0.7 * 100) / 100,
             match_reason: `ID matched (${bestInvoice.invoice_number}) but amount differs by ${(diff * 100).toFixed(1)}% — tx: ${txAmount}, inv: ${invAmount}`,
           });
-          semanticMatches++;
+          needsReviewMatches++;
           continue;
         } else {
           // ≤5% difference: accept as exact
@@ -249,13 +250,14 @@ async function reconcileClient(supabase, clientId) {
     details: {
       exact_matches: exactMatches,
       semantic_matches: semanticMatches,
+      needs_review_matches: needsReviewMatches,
       unmatched,
       total: transactions.length,
       duration_ms: durationMs,
     },
   });
 
-  return { exactMatches, semanticMatches, unmatched, durationMs };
+  return { exactMatches, semanticMatches, needsReviewMatches, unmatched, durationMs };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
