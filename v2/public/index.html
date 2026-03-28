@@ -324,10 +324,11 @@
       font-size: 0.75rem;
       color: var(--muted);
       margin-top: 3px;
-      max-width: 200px;
+      max-width: 320px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      cursor: help;
     }
 
     .amount { font-variant-numeric: tabular-nums; }
@@ -498,6 +499,50 @@
     .queue-item-status.done    { color: var(--success); }
     .queue-item-status.failed  { color: var(--error); }
     .queue-item-icon { flex-shrink: 0; width: 16px; text-align: center; }
+
+    /* ── Results filter bar ── */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .filter-search {
+      flex: 1;
+      min-width: 180px;
+      max-width: 320px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: var(--text);
+      font-size: 0.875rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .filter-search:focus { border-color: var(--accent); }
+    .filter-search::placeholder { color: var(--muted); }
+    .filter-pills {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .filter-pill {
+      padding: 5px 12px;
+      border-radius: 20px;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--muted);
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .filter-pill:hover { border-color: var(--accent); color: var(--text); }
+    .filter-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .filter-count { font-size: 0.75rem; margin-left: 4px; opacity: 0.8; }
 
     /* ── Responsive ── */
     @media (max-width: 768px) {
@@ -673,6 +718,23 @@
         <div class="legend-dot" style="background:var(--error)"></div>
         <span><strong>Unmatched</strong> — no corresponding invoice found in Xero</span>
       </div>
+    </div>
+  </div>
+
+  <!-- Results filter bar -->
+  <div class="filter-bar" id="filter-bar" style="display:none">
+    <input
+      type="text"
+      class="filter-search"
+      id="filter-search"
+      placeholder="Search transactions, invoices, contacts…"
+      oninput="applyFilters()"
+    />
+    <div class="filter-pills">
+      <button class="filter-pill active" data-filter="all" onclick="setFilterPill(this)">All <span class="filter-count" id="filter-count-all"></span></button>
+      <button class="filter-pill" data-filter="unmatched" onclick="setFilterPill(this)">Unmatched <span class="filter-count" id="filter-count-unmatched"></span></button>
+      <button class="filter-pill" data-filter="review" onclick="setFilterPill(this)">Needs review <span class="filter-count" id="filter-count-review"></span></button>
+      <button class="filter-pill" data-filter="matched" onclick="setFilterPill(this)">Matched <span class="filter-count" id="filter-count-matched"></span></button>
     </div>
   </div>
 
@@ -1054,7 +1116,19 @@
       await api('/api/reconcile', { method: 'POST' });
       if (!batchMode) setStep('step-reconcile', 'done');
 
-      const count = extractRes.count;
+      const count = extractRes?.count ?? 0;
+      if (count === 0 && !batchMode) {
+        // No invoices found — show a persistent inline error so the CFO
+        // knows the file was processed but no data was extracted.
+        const errEl = document.getElementById('load-error');
+        document.getElementById('load-error-msg').textContent = ' No transactions could be extracted from this file. Check that it is a valid bank statement.';
+        errEl.classList.add('visible');
+        document.getElementById('upload-progress').classList.remove('visible');
+        resetSteps();
+        isUploading = false;
+        document.getElementById('upload-zone').classList.remove('uploading');
+        return;
+      }
       if (!batchMode) {
         showStatus(`Done! ${count} transaction${count !== 1 ? 's' : ''} extracted and reconciled.`, false, true);
         setTimeout(hideStatus, 4000);
@@ -1130,7 +1204,11 @@
   // ── CSV Export (REC-330) ──
   function exportCSV() {
     const reconciliations = window._reconciliations || [];
-    if (!reconciliations.length) return;
+    if (!reconciliations.length) {
+      showStatus('Nothing to export — upload a bank statement first.', false, false, true);
+      setTimeout(hideStatus, 4000);
+      return;
+    }
     const headers = ['Transaction Date', 'Description', 'Amount', 'Currency', 'Match Type', 'Invoice Number', 'Contact', 'Override Note', 'Status'];
     const rows = reconciliations.map((r) => {
       const bt = r.bank_transaction || {};
@@ -1169,6 +1247,7 @@
     document.getElementById('empty-state').style.display = 'none';
     document.getElementById('results-header').style.display = 'none';
     document.getElementById('results-table').style.display = 'none';
+    document.getElementById('filter-bar').style.display = 'none';
 
     try {
       const data = await api('/api/results');
@@ -1219,6 +1298,7 @@
     if (reconciliations.length === 0) {
       document.getElementById('results-table').style.display = 'none';
       document.getElementById('results-header').style.display = 'none';
+      document.getElementById('filter-bar').style.display = 'none';
       document.getElementById('empty-state').style.display = 'block';
       return;
     }
@@ -1226,6 +1306,23 @@
     document.getElementById('results-header').style.display = 'block';
     document.getElementById('results-table').style.display = 'block';
     document.getElementById('empty-state').style.display = 'none';
+    document.getElementById('filter-bar').style.display = 'flex';
+
+    // Update filter pill counts
+    const unmatchedCount = reconciliations.filter(r => r.match_type === 'unmatched').length;
+    const reviewCount = reconciliations.filter(r => (r.match_type === 'semantic' || r.match_type === 'needs_review') && !r.overridden_by_user).length;
+    const matchedCount = reconciliations.length - unmatchedCount - reviewCount;
+    const countEl = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n > 0 ? n : ''; };
+    countEl('filter-count-all', reconciliations.length);
+    countEl('filter-count-unmatched', unmatchedCount);
+    countEl('filter-count-review', reviewCount);
+    countEl('filter-count-matched', matchedCount);
+
+    // Reset filter state on fresh render
+    _activeFilter = 'all';
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
+    const searchEl = document.getElementById('filter-search');
+    if (searchEl) searchEl.value = '';
 
     const tbody = document.getElementById('results-body');
     tbody.innerHTML = reconciliations.map((r) => {
@@ -1314,6 +1411,67 @@
         <td>${status}${reviewActions}</td>
       </tr>`;
     }).join('');
+  }
+
+  // ── Results filter (search + status pills) ──
+  let _activeFilter = 'all';
+
+  function setFilterPill(btn) {
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    _activeFilter = btn.dataset.filter;
+    applyFilters();
+  }
+
+  function applyFilters() {
+    const query = (document.getElementById('filter-search')?.value || '').toLowerCase().trim();
+    const rows = document.querySelectorAll('#results-body tr');
+    let visible = 0;
+
+    rows.forEach((row) => {
+      const recId = row.dataset.recId;
+      const rec = (window._reconciliations || []).find(r => r.id === recId);
+      if (!rec) { row.style.display = ''; return; }
+
+      // Status filter
+      const isUnmatched = rec.match_type === 'unmatched';
+      const isReview = (rec.match_type === 'semantic' || rec.match_type === 'needs_review') && !rec.overridden_by_user;
+      const isMatched = !isUnmatched && !isReview;
+
+      if (_activeFilter === 'unmatched' && !isUnmatched) { row.style.display = 'none'; return; }
+      if (_activeFilter === 'review'    && !isReview)    { row.style.display = 'none'; return; }
+      if (_activeFilter === 'matched'   && !isMatched)   { row.style.display = 'none'; return; }
+
+      // Text search across description, invoice number, contact name
+      if (query) {
+        const bt = rec.bank_transaction || {};
+        const inv = rec.invoice || {};
+        const haystack = [
+          bt.activity_description, bt.invoice_number,
+          inv.invoice_number, inv.contact_name,
+          rec.match_reason,
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (!haystack.includes(query)) { row.style.display = 'none'; return; }
+      }
+
+      row.style.display = '';
+      visible++;
+    });
+
+    // Show "no results" hint inside the table if all rows are hidden
+    let noMatchRow = document.getElementById('filter-no-match-row');
+    const tbody = document.getElementById('results-body');
+    if (visible === 0 && rows.length > 0) {
+      if (!noMatchRow) {
+        noMatchRow = document.createElement('tr');
+        noMatchRow.id = 'filter-no-match-row';
+        noMatchRow.innerHTML = `<td colspan="6" style="text-align:center;color:var(--muted);padding:24px">No transactions match your filter.</td>`;
+        tbody.appendChild(noMatchRow);
+      }
+      noMatchRow.style.display = '';
+    } else if (noMatchRow) {
+      noMatchRow.style.display = 'none';
+    }
   }
 
   function escapeHtml(str) {
