@@ -208,7 +208,20 @@ async function matchAndReconcile(supabase, clientId, xeroInvoices) {
     }
     invoicesSaved++;
 
-    if (!contactId) continue;
+    // Contactless invoice — saved to DB but cannot be matched against transactions
+    // without a contact/vendor. Flag in logs so CFO-facing reports stay accurate.
+    if (!contactId) {
+      console.warn(
+        `[XeroPoller] Contactless invoice skipped for reconciliation: InvoiceID=${xeroInv.InvoiceID} InvoiceNumber=${xeroInv.InvoiceNumber || "(none)"} — saved as needs_review`
+      );
+      // Mark the saved invoice so the CFO dashboard can surface it for manual review
+      await supabase
+        .from("invoices")
+        .update({ review_flag: "missing_contact", updated_at: new Date().toISOString() })
+        .eq("client_id", clientId)
+        .eq("xero_invoice_id", xeroInv.InvoiceID);
+      continue;
+    }
 
     // Find unmatched bank transactions for this client
     const { data: transactions } = await supabase
@@ -216,7 +229,12 @@ async function matchAndReconcile(supabase, clientId, xeroInvoices) {
       .select("id, invoice_number, potential_invoice_ids")
       .eq("client_id", clientId);
 
-    if (!transactions?.length) continue;
+    if (!transactions?.length) {
+      console.warn(
+        `[XeroPoller] No bank transactions found for client=${clientId} — reconciliation skipped for InvoiceID=${xeroInv.InvoiceID}`
+      );
+      continue;
+    }
 
     let bestMatch = null;
     let bestScore = 0;
