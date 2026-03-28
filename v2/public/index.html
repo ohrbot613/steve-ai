@@ -132,6 +132,12 @@
     }
     .info-banner.xero-needed .banner-text { color: #93c5fd; }
     .info-banner.xero-needed .banner-text strong { color: #bfdbfe; display: block; margin-bottom: 2px; }
+    .info-banner.xero-synced {
+      background: #0f2a1e;
+      border: 1px solid #16a34a;
+    }
+    .info-banner.xero-synced .banner-icon { color: #4ade80; }
+    .info-banner.xero-synced #xero-sync-text { color: #86efac; }
     .info-banner .banner-icon { font-size: 1.25rem; flex-shrink: 0; padding-top: 1px; }
 
     /* ── Load error ── */
@@ -616,6 +622,12 @@
     <button class="btn btn-secondary" onclick="connectXero()" style="margin-left:auto;white-space:nowrap">Connect Xero</button>
   </div>
 
+  <!-- Xero last-synced indicator (shown when Xero is connected) -->
+  <div class="info-banner xero-synced" id="xero-sync-banner" style="display:none">
+    <div class="banner-icon">✓</div>
+    <div class="banner-text" id="xero-sync-text">Xero connected — awaiting first sync.</div>
+  </div>
+
   <!-- Results load error -->
   <div class="load-error" id="load-error">
     <strong>Could not load results.</strong>
@@ -644,8 +656,8 @@
     <div class="icon">📄</div>
     <strong>Upload bank statement</strong>
     <p>Drag and drop or click to browse</p>
-    <p class="file-types">Supported formats: PDF, Excel (.xlsx)</p>
-    <input type="file" id="file-input" accept=".pdf,.xlsx" multiple style="display:none" onchange="handleFileSelect(event)" />
+    <p class="file-types">Supported formats: PDF, Excel (.xlsx, .xls)</p>
+    <input type="file" id="file-input" accept=".pdf,.xlsx,.xls" multiple style="display:none" onchange="handleFileSelect(event)" />
 
     <!-- Inline step progress (single-file mode) -->
     <div class="upload-progress" id="upload-progress">
@@ -690,7 +702,7 @@
     <div class="stat-card review">
       <div class="label">Needs review</div>
       <div class="value" id="stat-review">—</div>
-      <div class="sublabel" id="stat-review-amount">semantic match, verify manually</div>
+      <div class="sublabel" id="stat-review-amount">AI matched — verify before booking</div>
     </div>
   </div>
 
@@ -870,6 +882,7 @@
       showApp(email, false);
       api('/api/me').then((meData) => {
         document.getElementById('xero-banner').style.display = meData.xeroConnected ? 'none' : 'flex';
+        updateXeroSyncBanner(meData.xeroConnected, meData.xeroLastPolledAt || null);
       }).catch(() => {});
     } catch (err) {
       errEl.textContent = err.message;
@@ -894,12 +907,31 @@
     document.getElementById('header-user').style.display = 'none';
   }
 
-  function showApp(email, xeroConnected) {
+  function relativeTime(isoString) {
+    if (!isoString) return null;
+    const diff = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)} minute${Math.floor(diff / 60) === 1 ? '' : 's'} ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)} hour${Math.floor(diff / 3600) === 1 ? '' : 's'} ago`;
+    return `${Math.floor(diff / 86400)} day${Math.floor(diff / 86400) === 1 ? '' : 's'} ago`;
+  }
+
+  function updateXeroSyncBanner(xeroConnected, xeroLastPolledAt) {
+    const syncBanner = document.getElementById('xero-sync-banner');
+    const syncText = document.getElementById('xero-sync-text');
+    if (!xeroConnected) { syncBanner.style.display = 'none'; return; }
+    syncBanner.style.display = 'flex';
+    const rel = relativeTime(xeroLastPolledAt);
+    syncText.textContent = rel ? `Last synced: ${rel}` : 'Xero connected — awaiting first sync.';
+  }
+
+  function showApp(email, xeroConnected, xeroLastPolledAt) {
     document.getElementById('auth-view').style.display = 'none';
     document.getElementById('app-view').style.display = 'block';
     document.getElementById('header-user').style.display = 'flex';
     document.getElementById('header-email').textContent = email;
     document.getElementById('xero-banner').style.display = xeroConnected ? 'none' : 'flex';
+    updateXeroSyncBanner(xeroConnected, xeroLastPolledAt || null);
     loadResults();
   }
 
@@ -1610,7 +1642,7 @@
     if (saved) {
       currentToken = saved;
       api('/api/me').then((data) => {
-        showApp(data.email, data.xeroConnected);
+        showApp(data.email, data.xeroConnected, data.xeroLastPolledAt || null);
       }).catch(() => {
         localStorage.removeItem('steve_token');
         currentToken = null;

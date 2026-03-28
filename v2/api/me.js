@@ -17,7 +17,7 @@ export default async function handler(req, res) {
   // Fetch xero connection status from clients table
   const { data: client } = await supabase
     .from("clients")
-    .select("xero_tenant_id")
+    .select("xero_tenant_id, xero_last_polled_at")
     .eq("id", user.id)
     .single();
 
@@ -25,5 +25,6 @@ export default async function handler(req, res) {
     id: user.id,
     email: user.email,
     xeroConnected: !!(client?.xero_tenant_id),
+    xeroLastPolledAt: client?.xero_last_polled_at || null,
   });
 }
