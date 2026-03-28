@@ -362,6 +362,26 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* ── Loading skeleton (REC-337) ── */
+    @keyframes shimmer {
+      0%   { background-position: -600px 0; }
+      100% { background-position:  600px 0; }
+    }
+    #results-skeleton { margin-top: 16px; }
+    .skeleton-row {
+      height: 44px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      background: linear-gradient(90deg, var(--surface) 25%, #252836 50%, var(--surface) 75%);
+      background-size: 1200px 100%;
+      animation: shimmer 1.4s ease-in-out infinite;
+    }
+    .skeleton-row.skeleton-header {
+      height: 36px;
+      margin-bottom: 12px;
+      opacity: 0.6;
+    }
+
     /* ── Empty state with onboarding steps ── */
     .empty-state {
       text-align: center;
@@ -556,6 +576,15 @@
     <strong>Could not load results.</strong>
     <span id="load-error-msg"></span>
     <a href="#" onclick="loadResults(); return false;" style="color:var(--unmatched-text); margin-left:4px; text-decoration:underline;">Retry</a>
+  </div>
+
+  <!-- Results loading skeleton (REC-337) -->
+  <div id="results-skeleton" style="display:none">
+    <div class="skeleton-row skeleton-header"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row"></div>
+    <div class="skeleton-row"></div>
   </div>
 
   <!-- Upload zone -->
@@ -1130,10 +1159,19 @@
     const errEl = document.getElementById('load-error');
     errEl.classList.remove('visible');
 
+    // REC-337: show loading skeleton while fetch is in progress
+    const skeletonEl = document.getElementById('results-skeleton');
+    skeletonEl.style.display = 'block';
+    document.getElementById('empty-state').style.display = 'none';
+    document.getElementById('results-header').style.display = 'none';
+    document.getElementById('results-table').style.display = 'none';
+
     try {
       const data = await api('/api/results');
+      skeletonEl.style.display = 'none';
       renderResults(data);
     } catch (err) {
+      skeletonEl.style.display = 'none';
       document.getElementById('load-error-msg').textContent = ' ' + err.message;
       errEl.classList.add('visible');
     }
