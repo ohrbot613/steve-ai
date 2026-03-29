@@ -1261,10 +1261,15 @@
         // Flagged invoice row (e.g. missing_contact) — no bank transaction exists
         const status = 'Needs attention';
         const notes = 'No bank transaction found for this Xero invoice';
+        const flaggedRawDate = inv.date || inv.due_date || '';
+        const flaggedDate = flaggedRawDate ? new Date(flaggedRawDate).toLocaleDateString('en-GB') : '';
+        const flaggedAmt = inv.amount != null && inv.amount !== ''
+          ? Number(inv.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+          : '';
         return [
-          inv.date || inv.due_date || '',
+          flaggedDate,
           '"Xero invoice \u2013 no bank transaction match"',
-          inv.amount || '',
+          flaggedAmt,
           inv.currency || '',
           r.match_type || '',
           inv.invoice_number || '',
@@ -1286,10 +1291,16 @@
         missing_contact: 'No Xero Contact',
       };
       const matchTypeLabel = r.overridden_by_user ? 'Confirmed Override' : (matchTypeDisplay[r.match_type] || r.match_type || '');
+      const csvDate = bt.transaction_date
+        ? new Date(bt.transaction_date).toLocaleDateString('en-GB')
+        : '';
+      const csvAmt = bt.amount != null && bt.amount !== ''
+        ? Number(bt.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : '';
       return [
-        bt.transaction_date || '',
+        csvDate,
         `"${(bt.activity_description || '').replace(/"/g, '""')}"`,
-        bt.amount || '',
+        csvAmt,
         bt.currency || '',
         matchTypeLabel,
         inv.invoice_number || bt.invoice_number || '',
@@ -1567,10 +1578,10 @@
   }
 
   function formatCurrency(amount, currency) {
-    const symbol = currency === 'GBP' ? '£'
-      : currency === 'USD' ? '$'
-      : currency === 'EUR' ? '€'
-      : (currency ? currency + '\u00a0' : '');
+    // currency may arrive as an ISO code (GBP, USD, EUR) or as the raw symbol (£, $, €)
+    // extracted by Claude from the document. Normalise both forms so we never emit a double-symbol.
+    const symbolMap = { GBP: '£', USD: '$', EUR: '€', '£': '£', '$': '$', '€': '€' };
+    const symbol = symbolMap[currency] ?? (currency ? currency + '\u00a0' : '');
     return `${symbol}${Number(amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
 
@@ -1689,7 +1700,7 @@
           token_exchange_failed: 'Authentication failed — please reconnect',
           tenant_fetch_failed: 'Could not access your Xero account',
         };
-        const reason = reasonMap[rawReason] || `Connection failed — please try again (${rawReason})`;
+        const reason = reasonMap[rawReason] || 'Connection failed — please try again or contact your administrator';
         showStatus(`Xero: ${reason}.`, false, false, true);
         setTimeout(hideStatus, 7000);
       }
