@@ -884,8 +884,8 @@
       currentToken = data.access_token;
       localStorage.setItem('steve_token', currentToken);
 
-      // Show app immediately with banner hidden, then fetch actual Xero status (REC-328)
-      showApp(email, false);
+      // Show app immediately with banner hidden until /api/me resolves (null = loading state)
+      showApp(email, null);
       api('/api/me').then((meData) => {
         document.getElementById('xero-banner').style.display = meData.xeroConnected ? 'none' : 'flex';
         const emptyCta = document.getElementById('empty-xero-cta');
@@ -938,10 +938,13 @@
     document.getElementById('app-view').style.display = 'block';
     document.getElementById('header-user').style.display = 'flex';
     document.getElementById('header-email').textContent = email;
-    document.getElementById('xero-banner').style.display = xeroConnected ? 'none' : 'flex';
-    const emptyCta = document.getElementById('empty-xero-cta');
-    if (emptyCta) emptyCta.style.display = xeroConnected ? 'none' : 'block';
-    updateXeroSyncBanner(xeroConnected, xeroLastPolledAt || null);
+    // xeroConnected === null means "loading — don't flash banner yet" (login flow fetches /api/me async)
+    if (xeroConnected !== null) {
+      document.getElementById('xero-banner').style.display = xeroConnected ? 'none' : 'flex';
+      const emptyCta = document.getElementById('empty-xero-cta');
+      if (emptyCta) emptyCta.style.display = xeroConnected ? 'none' : 'block';
+      updateXeroSyncBanner(xeroConnected, xeroLastPolledAt || null);
+    }
     loadResults();
   }
 
