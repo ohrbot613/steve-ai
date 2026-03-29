@@ -47,6 +47,8 @@ create table if not exists invoices (
   due_date date,
   description text,
   from_xero boolean default false,
+  -- set by xero-poll when an invoice cannot be auto-reconciled (e.g. missing_contact)
+  review_flag text,
   -- embedding for semantic matching (auto-populated via Supabase)
   embedding vector(1536),
   -- raw content used for embedding generation

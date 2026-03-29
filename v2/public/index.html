@@ -1317,8 +1317,8 @@
         .filter(r => r.match_type === 'unmatched')
         .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
       const reviewAmt = reconciliations
-        .filter(r => r.match_type === 'semantic' || r.match_type === 'needs_review')
-        .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
+        .filter(r => r.match_type === 'semantic' || r.match_type === 'needs_review' || r.match_type === 'missing_contact')
+        .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || Number(r.invoice?.amount) || 0), 0);
 
       document.getElementById('stat-matched-amount').textContent = formatCurrency(matchedAmt, currency);
       document.getElementById('stat-unmatched-amount').textContent = formatCurrency(unmatchedAmt, currency);
@@ -1342,7 +1342,7 @@
 
     // Update filter pill counts
     const unmatchedCount = reconciliations.filter(r => r.match_type === 'unmatched').length;
-    const reviewCount = reconciliations.filter(r => (r.match_type === 'semantic' || r.match_type === 'needs_review') && !r.overridden_by_user).length;
+    const reviewCount = reconciliations.filter(r => (r.match_type === 'semantic' || r.match_type === 'needs_review' || r.match_type === 'missing_contact') && !r.overridden_by_user).length;
     const matchedCount = reconciliations.length - unmatchedCount - reviewCount;
     const countEl = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n > 0 ? n : ''; };
     countEl('filter-count-all', reconciliations.length);
@@ -1364,8 +1364,12 @@
         ? '<span class="badge badge-review">Amount mismatch</span>'
         : r.match_type === 'semantic'
         ? '<span class="badge badge-semantic">Semantic</span>'
+        : r.match_type === 'missing_contact'
+        ? '<span class="badge badge-review">No Xero contact</span>'
         : '<span class="badge badge-unmatched">Unmatched</span>';
 
+      // missing_contact rows are Xero-only invoices with no bank transaction —
+      // no confirm/override actions until they're linked to a transaction.
       const needsReview = (r.match_type === 'semantic' || r.match_type === 'needs_review') && !r.overridden_by_user;
       const reviewActions = needsReview
         ? `<div class="review-actions">
@@ -1384,6 +1388,8 @@
         ? `<span class="badge badge-overridden" title="${escapeHtml(r.override_note || '')}">Overridden</span>${paidTag}`
         : r.match_type === 'unmatched'
         ? '<span class="badge badge-unmatched">No match</span>'
+        : r.match_type === 'missing_contact'
+        ? `<span class="badge badge-review" title="This Xero invoice has no contact/vendor. Add a contact in Xero so it can be reconciled.">No Xero contact</span>${paidTag}`
         : r.match_type === 'needs_review'
         ? `<span class="badge badge-review">Needs review</span>${paidTag}`
         : r.match_type === 'semantic'
@@ -1408,16 +1414,22 @@
           })()
         : '<span style="color:var(--muted)">—</span>';
 
+      // For missing_contact rows there is no bank transaction — show invoice data instead
+      const isMissingContact = r.match_type === 'missing_contact';
       const amt = r.bank_transaction?.amount
         ? `<span class="amount">${formatCurrency(r.bank_transaction.amount, r.bank_transaction.currency)}</span>`
+        : isMissingContact && r.invoice?.amount
+        ? `<span class="amount" style="color:var(--muted)" title="Invoice amount (no bank transaction)">${formatCurrency(r.invoice.amount, r.invoice.currency || 'GBP')}</span>`
         : '—';
 
       const date = r.bank_transaction?.transaction_date
         ? new Date(r.bank_transaction.transaction_date).toLocaleDateString('en-GB')
+        : isMissingContact && r.invoice?.date
+        ? new Date(r.invoice.date).toLocaleDateString('en-GB')
         : '—';
 
       const invoice = r.invoice
-        ? `${escapeHtml(r.invoice.invoice_number)}${r.invoice.contact_name ? ` · ${escapeHtml(r.invoice.contact_name)}` : ''}`
+        ? `${escapeHtml(r.invoice.invoice_number || '—')}${r.invoice.contact_name ? ` · ${escapeHtml(r.invoice.contact_name)}` : ''}`
         : '<span style="color:var(--muted)">—</span>';
 
       // For amount-mismatch rows, show invoice amount alongside the transaction amount
@@ -1425,12 +1437,16 @@
         ? ` <span style="color:var(--warning);font-size:0.8em">(inv: ${formatCurrency(r.invoice.amount, r.bank_transaction?.currency)})</span>`
         : '';
 
-      const description = escapeHtml(
-        r.bank_transaction?.activity_description || r.bank_transaction?.invoice_number || '—'
-      );
+      // For missing_contact rows, show the invoice description as the "description" column
+      const description = isMissingContact
+        ? escapeHtml(r.invoice?.description || r.invoice?.invoice_number || '—')
+        : escapeHtml(r.bank_transaction?.activity_description || r.bank_transaction?.invoice_number || '—');
 
-      // Show match reason under the invoice for semantic and needs_review matches
-      const matchReason = ((r.match_type === 'semantic' || r.match_type === 'needs_review') && r.match_reason)
+      // Show match reason under the invoice for semantic/needs_review matches;
+      // for missing_contact show a plain explanation instead
+      const matchReason = isMissingContact
+        ? `<div class="match-reason" style="color:var(--warning)">Add a contact in Xero to enable reconciliation</div>`
+        : ((r.match_type === 'semantic' || r.match_type === 'needs_review') && r.match_reason)
         ? `<div class="match-reason" title="${escapeHtml(r.match_reason)}">${escapeHtml(r.match_reason)}</div>`
         : '';
 
@@ -1467,7 +1483,7 @@
 
       // Status filter
       const isUnmatched = rec.match_type === 'unmatched';
-      const isReview = (rec.match_type === 'semantic' || rec.match_type === 'needs_review') && !rec.overridden_by_user;
+      const isReview = (rec.match_type === 'semantic' || rec.match_type === 'needs_review' || rec.match_type === 'missing_contact') && !rec.overridden_by_user;
       const isMatched = !isUnmatched && !isReview;
 
       if (_activeFilter === 'unmatched' && !isUnmatched) { row.style.display = 'none'; return; }
