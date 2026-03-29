@@ -83,22 +83,29 @@ export default async function handler(req, res) {
 
   const allRows = [...reconciliations, ...dedupedFlaggedRows];
 
-  const total = allRows.length;
-  const overridden = reconciliations.filter((r) => r.overridden_by_user).length;
+  // Stats are based on real reconciliations (bank transactions) only.
+  // Flagged invoices (missing_contact) are a separate counter — they are NOT bank transactions
+  // so including them in "total" would inflate the count vs what the CFO uploaded.
+  const total = reconciliations.length;
+  const flagged = dedupedFlaggedRows.length; // Xero invoices needing manual attention
+
+  // Stats must be mutually exclusive and sum to total.
+  // matched: confirmed correct (exact ID match, or manually confirmed by user)
   const matched = reconciliations.filter(
-    (r) => r.match_type === "exact_id" || r.match_type === "manual" || r.overridden_by_user
+    (r) => (r.match_type === "exact_id" || r.match_type === "manual") && !r.overridden_by_user
   ).length;
+  // overridden: user manually accepted a previously uncertain match
+  const overridden = reconciliations.filter((r) => r.overridden_by_user).length;
   const unmatched = reconciliations.filter((r) => r.match_type === "unmatched").length;
-  const review = allRows.filter(
+  // review: uncertain AI matches that need CFO review (excludes overridden and excludes missing_contact — those are in flagged)
+  const review = reconciliations.filter(
     (r) =>
-      (r.match_type === "semantic" ||
-        r.match_type === "needs_review" ||
-        r.match_type === "missing_contact") &&
+      (r.match_type === "semantic" || r.match_type === "needs_review") &&
       !r.overridden_by_user
   ).length;
 
   return res.json({
     reconciliations: allRows,
-    stats: { total, matched, unmatched, review, overridden },
+    stats: { total, matched, unmatched, review, overridden, flagged },
   });
 }
