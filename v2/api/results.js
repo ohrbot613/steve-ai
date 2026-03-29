@@ -72,7 +72,16 @@ export default async function handler(req, res) {
     },
   }));
 
-  const allRows = [...reconciliations, ...flaggedRows];
+  // Deduplicate: if an invoice already appears in reconciliations, skip its flagged row
+  // (prevents duplicate rows when an invoice has both a reconciliation and a review_flag)
+  const reconciledInvoiceIds = new Set(
+    reconciliations.map((r) => r.invoice?.id).filter(Boolean)
+  );
+  const dedupedFlaggedRows = flaggedRows.filter(
+    (r) => !reconciledInvoiceIds.has(r.invoice?.id)
+  );
+
+  const allRows = [...reconciliations, ...dedupedFlaggedRows];
 
   const total = allRows.length;
   const overridden = reconciliations.filter((r) => r.overridden_by_user).length;
