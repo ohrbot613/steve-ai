@@ -60,7 +60,7 @@ export default async function handler(req, res) {
 
   if (updateErr) {
     console.error("[Review] update error:", updateErr.message);
-    return res.status(500).json({ error: updateErr.message });
+    return res.status(500).json({ error: "Something went wrong — please try again." });
   }
 
   return res.status(200).json({ ok: true });

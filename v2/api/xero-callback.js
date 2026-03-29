@@ -204,10 +204,6 @@ export default async function handler(req, res) {
     },
   });
 
-  console.log(
-    `[XeroCallback] Connected: client=${clientId}, tenant=${tenantInfo.tenantId} (${tenantInfo.tenantName})`
-  );
-
   // ── 7. Redirect to dashboard ────────────────────────────────────────────────
   return res.redirect(302, `${process.env.NEXT_PUBLIC_APP_URL}?xero=connected`);
 }

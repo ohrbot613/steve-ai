@@ -208,9 +208,6 @@ export default async function handler(req, res) {
 
     // Step 2: if text layer is sparse/empty, fall back to Claude vision OCR (REC-313)
     if (pdfText.trim().length < PDF_VISION_TEXT_THRESHOLD) {
-      console.log(
-        `[Parse] PDF text layer has ${pdfText.trim().length} chars (< ${PDF_VISION_TEXT_THRESHOLD}) — falling back to Claude vision OCR`
-      );
       try {
         text = await claudeVisionOcrPdf(filePart.data);
         ocrMethod = "vision";

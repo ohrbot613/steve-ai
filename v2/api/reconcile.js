@@ -123,7 +123,7 @@ async function reconcileClient(supabase, clientId) {
             invoice_id: bestInvoice.id,
             match_type: "needs_review",
             confidence: Math.round(bestScore * 0.7 * 100) / 100,
-            match_reason: `ID matched (${bestInvoice.invoice_number}) but amount differs by ${(diff * 100).toFixed(1)}% — tx: ${txAmount}, inv: ${invAmount}`,
+            match_reason: `Invoice ${bestInvoice.invoice_number} matched but amount differs by ${(diff * 100).toFixed(1)}% — please verify before booking`,
           });
           needsReviewMatches++;
           continue;
@@ -213,7 +213,7 @@ async function reconcileClient(supabase, clientId) {
             invoice_id: match.id,
             match_type: "semantic",
             confidence: Math.round(match.similarity * 100) / 100,
-            match_reason: `Semantic similarity: ${(match.similarity * 100).toFixed(1)}% — ${match.invoice_number} / ${match.contact_name}`,
+            match_reason: `AI matched to ${match.invoice_number}${match.contact_name ? ` (${match.contact_name})` : ''} — please verify before booking`,
           });
           semanticMatches++;
           continue;

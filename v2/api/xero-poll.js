@@ -347,10 +347,6 @@ async function pollAndReconcileForClient(supabase, clientId) {
     },
   });
 
-  console.log(
-    `[XeroPoller] client=${clientId}: ${xeroInvoices.length} fetched, ${invoicesSaved} saved, ${matchesWritten} matched (${durationMs}ms)`
-  );
-
   return {
     invoicesFetched: xeroInvoices.length,
     invoicesSaved,

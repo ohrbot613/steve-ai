@@ -1622,7 +1622,15 @@
       input.value = '';
       modal.style.display = 'flex';
       input.focus();
-      function cleanup() { modal.style.display = 'none'; }
+      function cleanup() {
+        modal.style.display = 'none';
+        input.removeEventListener('keydown', onKey);
+      }
+      function onKey(e) {
+        if (e.key === 'Enter') { cleanup(); resolve(input.value.trim()); }
+        if (e.key === 'Escape') { cleanup(); resolve(null); }
+      }
+      input.addEventListener('keydown', onKey);
       document.getElementById('override-confirm').onclick = () => { cleanup(); resolve(input.value.trim()); };
       document.getElementById('override-cancel').onclick = () => { cleanup(); resolve(null); };
     });
@@ -1697,8 +1705,14 @@
         const rawReason = params.get('reason') || 'unknown';
         const reasonMap = {
           state_mismatch: 'Connection expired — please try again',
+          state_expired: 'Connection expired — please try again',
+          state_not_found: 'Connection expired — please try again',
+          invalid_state: 'Connection expired — please try again',
           token_exchange_failed: 'Authentication failed — please reconnect',
+          token_exchange: 'Authentication failed — please reconnect',
           tenant_fetch_failed: 'Could not access your Xero account',
+          tenant_fetch: 'Could not access your Xero account',
+          save_failed: 'Connection could not be saved — please try again',
         };
         const reason = reasonMap[rawReason] || 'Connection failed — please try again or contact your administrator';
         showStatus(`Xero: ${reason}.`, false, false, true);
