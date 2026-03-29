@@ -428,6 +428,7 @@ export default async function handler(req, res) {
       .update({ status: "error", error_message: err.message })
       .eq("id", uploadId);
 
-    return res.status(500).json({ error: err.message });
+    console.error("[Extract] extractAndStore error:", err.message);
+    return res.status(500).json({ error: "Something went wrong — please try again." });
   }
 }

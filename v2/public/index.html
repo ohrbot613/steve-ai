@@ -1159,6 +1159,9 @@
       if (!batchMode) setStep('step-reconcile', 'done');
 
       const count = extractRes?.count ?? 0;
+      if (count === 0 && batchMode) {
+        throw new Error('No transactions could be extracted from this file.');
+      }
       if (count === 0 && !batchMode) {
         // No invoices found — show a persistent inline error so the CFO
         // knows the file was processed but no data was extracted.
@@ -1273,12 +1276,22 @@
       }
       const bt = r.bank_transaction;
       const status = r.overridden_by_user ? 'Overridden' : r.match_type === 'exact_id' || r.match_type === 'manual' ? 'Matched' : r.match_type === 'unmatched' ? 'Unmatched' : 'Needs Review';
+      const matchTypeDisplay = {
+        exact_id: 'Matched',
+        manual: 'Matched',
+        overridden: 'Confirmed Override',
+        semantic: 'AI Match',
+        needs_review: 'Needs Review',
+        unmatched: 'No Match',
+        missing_contact: 'No Xero Contact',
+      };
+      const matchTypeLabel = r.overridden_by_user ? 'Confirmed Override' : (matchTypeDisplay[r.match_type] || r.match_type || '');
       return [
         bt.transaction_date || '',
         `"${(bt.activity_description || '').replace(/"/g, '""')}"`,
         bt.amount || '',
         bt.currency || '',
-        r.match_type || '',
+        matchTypeLabel,
         inv.invoice_number || bt.invoice_number || '',
         `"${(inv.contact_name || '').replace(/"/g, '""')}"`,
         `"${(r.override_note || '').replace(/"/g, '""')}"`,
@@ -1341,7 +1354,7 @@
       window._reconciliations = reconciliations;
 
       // Compute monetary totals from reconciliations
-      const currency = reconciliations[0]?.bank_transaction?.currency || 'GBP';
+      const currency = reconciliations.find(r => r.bank_transaction?.currency)?.bank_transaction?.currency || 'GBP';
       const matchedAmt = reconciliations
         .filter(r => r.match_type === 'exact_id' || r.match_type === 'manual' || r.overridden_by_user)
         .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
@@ -1349,8 +1362,8 @@
         .filter(r => r.match_type === 'unmatched')
         .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
       const reviewAmt = reconciliations
-        .filter(r => r.match_type === 'semantic' || r.match_type === 'needs_review' || r.match_type === 'missing_contact')
-        .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || Number(r.invoice?.amount) || 0), 0);
+        .filter(r => (r.match_type === 'semantic' || r.match_type === 'needs_review') && r.match_type !== 'missing_contact')
+        .reduce((sum, r) => sum + (Number(r.bank_transaction?.amount) || 0), 0);
 
       document.getElementById('stat-matched-amount').textContent = formatCurrency(matchedAmt, currency);
       document.getElementById('stat-unmatched-amount').textContent = formatCurrency(unmatchedAmt, currency);
@@ -1375,7 +1388,7 @@
     // Update filter pill counts
     const unmatchedCount = reconciliations.filter(r => r.match_type === 'unmatched').length;
     const reviewCount = reconciliations.filter(r => (r.match_type === 'semantic' || r.match_type === 'needs_review' || r.match_type === 'missing_contact') && !r.overridden_by_user).length;
-    const matchedCount = reconciliations.length - unmatchedCount - reviewCount;
+    const matchedCount = reconciliations.filter(r => r.overridden_by_user || ((r.match_type === 'exact_id' || r.match_type === 'manual') && !r.overridden_by_user)).length;
     const countEl = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n > 0 ? n : ''; };
     countEl('filter-count-all', reconciliations.length);
     countEl('filter-count-unmatched', unmatchedCount);
@@ -1403,7 +1416,7 @@
       // they appear reconciled even though payment was recorded beforehand.
       const alreadyPaid = r.invoice?.status === 'paid';
       const paidTag = alreadyPaid
-        ? ' <span class="badge badge-paid" title="This invoice was already marked paid in Xero">Already paid</span>'
+        ? ' <span class="badge badge-paid" title="Paid in Xero before this statement was uploaded — no action needed">Already paid</span>'
         : '';
 
       const status = r.overridden_by_user
@@ -1456,7 +1469,7 @@
 
       // For amount-mismatch rows, show invoice amount alongside the transaction amount
       const invoiceAmtNote = (r.match_type === 'needs_review' && r.invoice?.amount)
-        ? ` <span style="color:var(--warning);font-size:0.8em">(inv: ${formatCurrency(r.invoice.amount, r.bank_transaction?.currency)})</span>`
+        ? ` <span style="color:var(--warning);font-size:0.8em">(inv: ${formatCurrency(r.invoice.amount, r.bank_transaction?.currency || '')})</span>`
         : '';
 
       // For missing_contact rows, show the invoice description as the "description" column
@@ -1670,8 +1683,14 @@
         showStatus('Xero connection was cancelled.', false, false, true);
         setTimeout(hideStatus, 5000);
       } else if (xeroStatus === 'error') {
-        const reason = params.get('reason') || 'unknown';
-        showStatus(`Xero connection failed (${reason}). Please try again.`, false, false, true);
+        const rawReason = params.get('reason') || 'unknown';
+        const reasonMap = {
+          state_mismatch: 'Connection expired — please try again',
+          token_exchange_failed: 'Authentication failed — please reconnect',
+          tenant_fetch_failed: 'Could not access your Xero account',
+        };
+        const reason = reasonMap[rawReason] || `Connection failed — please try again (${rawReason})`;
+        showStatus(`Xero: ${reason}.`, false, false, true);
         setTimeout(hideStatus, 7000);
       }
     }

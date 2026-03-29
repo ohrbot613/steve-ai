@@ -287,6 +287,7 @@ export default async function handler(req, res) {
     const result = await reconcileClient(supabase, user.id);
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error("[Reconcile] reconcileClient error:", err.message);
+    return res.status(500).json({ error: "Something went wrong — please try again." });
   }
 }

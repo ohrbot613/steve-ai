@@ -31,7 +31,10 @@ export default async function handler(req, res) {
     .order("created_at", { ascending: false })
     .limit(2000);
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    console.error("[Results] reconciliations fetch error:", error.message);
+    return res.status(500).json({ error: "Something went wrong — please try again." });
+  }
 
   // Fetch Xero invoices flagged for manual review (e.g. missing_contact) that
   // never made it into the reconciliations table because they couldn't be matched.
@@ -90,12 +93,12 @@ export default async function handler(req, res) {
   const flagged = dedupedFlaggedRows.length; // Xero invoices needing manual attention
 
   // Stats must be mutually exclusive and sum to total.
-  // matched: confirmed correct (exact ID match, or manually confirmed by user)
+  // matched: confirmed correct (exact ID match, manually confirmed by user, or overridden by user)
+  // overridden rows are user-confirmed matches — they belong in matched so the totals add up.
+  const overridden = reconciliations.filter((r) => r.overridden_by_user).length;
   const matched = reconciliations.filter(
     (r) => (r.match_type === "exact_id" || r.match_type === "manual") && !r.overridden_by_user
-  ).length;
-  // overridden: user manually accepted a previously uncertain match
-  const overridden = reconciliations.filter((r) => r.overridden_by_user).length;
+  ).length + overridden;
   const unmatched = reconciliations.filter((r) => r.match_type === "unmatched").length;
   // review: uncertain AI matches that need CFO review (excludes overridden and excludes missing_contact — those are in flagged)
   const review = reconciliations.filter(

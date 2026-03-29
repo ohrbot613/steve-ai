@@ -31,6 +31,9 @@ export default async function handler(req, res) {
     .select("id")
     .single();
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    console.error("[Upload] upload insert error:", error.message);
+    return res.status(500).json({ error: "Something went wrong — please try again." });
+  }
   return res.json({ uploadId: data.id });
 }
