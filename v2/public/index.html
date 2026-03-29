@@ -773,6 +773,11 @@
     <div class="empty-icon">📊</div>
     <h3>No reconciliation results yet</h3>
     <p>Upload your first bank statement above and Steve will match each transaction against your Xero invoices automatically.</p>
+    <!-- Xero connect CTA — shown only when Xero is not yet connected -->
+    <div id="empty-xero-cta" style="display:none;margin-bottom:24px">
+      <p style="margin-bottom:12px;font-size:0.9375rem;color:var(--muted)">Connect your Xero account to start reconciling invoices.</p>
+      <button class="btn btn-primary" onclick="connectXero()">Connect Xero</button>
+    </div>
     <div class="onboarding-steps">
       <div class="onboarding-step">
         <div class="onboarding-num">1</div>
@@ -883,10 +888,12 @@
       showApp(email, false);
       api('/api/me').then((meData) => {
         document.getElementById('xero-banner').style.display = meData.xeroConnected ? 'none' : 'flex';
+        const emptyCta = document.getElementById('empty-xero-cta');
+        if (emptyCta) emptyCta.style.display = meData.xeroConnected ? 'none' : 'block';
         updateXeroSyncBanner(meData.xeroConnected, meData.xeroLastPolledAt || null);
       }).catch(() => {});
     } catch (err) {
-      errEl.textContent = err.message;
+      errEl.textContent = 'Sign-in failed — please check your details and try again.';
       btn.disabled = false;
       btn.textContent = authMode === 'signin' ? 'Sign in' : 'Sign up';
     }
@@ -932,6 +939,8 @@
     document.getElementById('header-user').style.display = 'flex';
     document.getElementById('header-email').textContent = email;
     document.getElementById('xero-banner').style.display = xeroConnected ? 'none' : 'flex';
+    const emptyCta = document.getElementById('empty-xero-cta');
+    if (emptyCta) emptyCta.style.display = xeroConnected ? 'none' : 'block';
     updateXeroSyncBanner(xeroConnected, xeroLastPolledAt || null);
     loadResults();
   }
@@ -947,7 +956,7 @@
       hideStatus();
       window.location.href = data.url;
     } catch (err) {
-      showStatus('Xero connection failed: ' + err.message, false, false, true);
+      showStatus('Unable to connect to Xero — please try again or contact your administrator.', false, false, true);
       setTimeout(hideStatus, 5000);
     }
   }
@@ -1040,7 +1049,7 @@
         setQueueItemState(i, 'done');
         doneCount++;
       } catch (err) {
-        setQueueItemState(i, 'failed', err.message);
+        setQueueItemState(i, 'failed', 'Upload failed — please check the file and try again.');
         failedCount++;
       }
     }
@@ -1188,7 +1197,7 @@
         }
       });
 
-      showStatus(`Upload failed: ${err.message}`, false, false, true);
+      showStatus('Upload failed — please check the file format and try again.', false, false, true);
 
       setTimeout(() => {
         hideStatus();
@@ -1307,7 +1316,7 @@
       renderResults(data);
     } catch (err) {
       skeletonEl.style.display = 'none';
-      document.getElementById('load-error-msg').textContent = ' ' + err.message;
+      document.getElementById('load-error-msg').textContent = ' Invoice data unavailable — please refresh the page or contact support.';
       errEl.classList.add('visible');
     }
   }
@@ -1381,16 +1390,6 @@
 
     const tbody = document.getElementById('results-body');
     tbody.innerHTML = reconciliations.map((r) => {
-      const matchBadge = r.match_type === 'exact_id'
-        ? '<span class="badge badge-matched">Exact match</span>'
-        : r.match_type === 'needs_review'
-        ? '<span class="badge badge-review">Amount mismatch</span>'
-        : r.match_type === 'semantic'
-        ? '<span class="badge badge-semantic">AI Match</span>'
-        : r.match_type === 'missing_contact'
-        ? '<span class="badge badge-review">No Xero contact</span>'
-        : '<span class="badge badge-unmatched">Unmatched</span>';
-
       // missing_contact rows are Xero-only invoices with no bank transaction —
       // no confirm/override actions until they're linked to a transaction.
       const needsReview = (r.match_type === 'semantic' || r.match_type === 'needs_review') && !r.overridden_by_user;
@@ -1585,7 +1584,7 @@
       const matchedCurrent = parseInt(matchedEl.textContent, 10);
       if (!isNaN(matchedCurrent)) matchedEl.textContent = matchedCurrent + 1;
     } catch (err) {
-      showStatus('Could not confirm match: ' + err.message, false, false, true);
+      showStatus('Unable to confirm this match — please try again.', false, false, true);
       setTimeout(hideStatus, 4000);
       btn.disabled = false;
     }
@@ -1626,7 +1625,7 @@
       const current = parseInt(statEl.textContent, 10);
       if (!isNaN(current) && current > 0) statEl.textContent = current - 1;
     } catch (err) {
-      showStatus('Could not save override: ' + err.message, false, false, true);
+      showStatus('Unable to save override — please try again.', false, false, true);
       setTimeout(hideStatus, 4000);
       btn.disabled = false;
     }
