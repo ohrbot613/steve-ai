@@ -703,6 +703,7 @@
       <div class="label">Needs review</div>
       <div class="value" id="stat-review">—</div>
       <div class="sublabel" id="stat-review-amount">AI matched — verify before booking</div>
+      <div class="sublabel" id="stat-flagged" style="color:var(--muted);font-size:0.75rem"></div>
     </div>
   </div>
 
@@ -720,7 +721,7 @@
       </div>
       <div class="legend-item">
         <div class="legend-dot" style="background:#3b82f6"></div>
-        <span><strong>Semantic</strong> — AI matched by meaning; please verify before booking</span>
+        <span><strong>AI Match</strong> — matched by meaning, needs review</span>
       </div>
       <div class="legend-item">
         <div class="legend-dot" style="background:var(--warning)"></div>
@@ -791,7 +792,7 @@
         <div class="onboarding-num">3</div>
         <div class="onboarding-text">
           Review the results
-          <small>Exact matches are reconciled instantly. Semantic matches (AI-inferred) need your manual confirmation.</small>
+          <small>Exact matches are reconciled instantly. AI matches (AI-inferred) need your manual confirmation.</small>
         </div>
       </div>
     </div>
@@ -1082,7 +1083,7 @@
   // batchMode: when true, skip single-file UI manipulation and re-throw errors
   // so uploadBatch() can detect failures and track per-file status correctly.
   async function uploadFile(file, { batchMode = false } = {}) {
-    if (!file.name.match(/\.(pdf|xlsx)$/i)) {
+    if (!file.name.match(/\.(pdf|xlsx?)$/i)) {
       if (batchMode) throw new Error('Unsupported file type (PDF or Excel only)');
       showStatus('Only PDF (.pdf) and Excel (.xlsx) files are supported.', false, false, true);
       setTimeout(hideStatus, 5000);
@@ -1241,10 +1242,27 @@
       setTimeout(hideStatus, 4000);
       return;
     }
-    const headers = ['Transaction Date', 'Description', 'Amount', 'Currency', 'Match Type', 'Invoice Number', 'Contact', 'Override Note', 'Status'];
+    const headers = ['Transaction Date', 'Description', 'Amount', 'Currency', 'Match Type', 'Invoice Number', 'Contact', 'Override Note', 'Status', 'Notes'];
     const rows = reconciliations.map((r) => {
-      const bt = r.bank_transaction || {};
       const inv = r.invoice || {};
+      if (!r.bank_transaction) {
+        // Flagged invoice row (e.g. missing_contact) — no bank transaction exists
+        const status = 'Needs attention';
+        const notes = 'No bank transaction found for this Xero invoice';
+        return [
+          inv.date || inv.due_date || '',
+          '"Xero invoice \u2013 no bank transaction match"',
+          inv.amount || '',
+          inv.currency || '',
+          r.match_type || '',
+          inv.invoice_number || '',
+          `"${(inv.contact_name || '').replace(/"/g, '""')}"`,
+          '',
+          status,
+          `"${notes}"`,
+        ].join(',');
+      }
+      const bt = r.bank_transaction;
       const status = r.overridden_by_user ? 'Overridden' : r.match_type === 'exact_id' || r.match_type === 'manual' ? 'Matched' : r.match_type === 'unmatched' ? 'Unmatched' : 'Needs Review';
       return [
         bt.transaction_date || '',
@@ -1256,6 +1274,7 @@
         `"${(inv.contact_name || '').replace(/"/g, '""')}"`,
         `"${(r.override_note || '').replace(/"/g, '""')}"`,
         status,
+        '',
       ].join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');
@@ -1276,6 +1295,7 @@
     // REC-337: show loading skeleton while fetch is in progress
     const skeletonEl = document.getElementById('results-skeleton');
     skeletonEl.style.display = 'block';
+    document.getElementById('stats-row').style.display = 'none';
     document.getElementById('empty-state').style.display = 'none';
     document.getElementById('results-header').style.display = 'none';
     document.getElementById('results-table').style.display = 'none';
@@ -1305,6 +1325,9 @@
       // Show overridden sub-count under matched (REC-329)
       const overrideEl = document.getElementById('stat-overridden');
       if (overrideEl) overrideEl.textContent = stats.overridden > 0 ? ` (${stats.overridden} overridden)` : '';
+      // Show flagged (Xero invoices needing manual attention) under needs review
+      const flaggedEl = document.getElementById('stat-flagged');
+      if (flaggedEl) flaggedEl.textContent = stats.flagged > 0 ? `(${stats.flagged} Xero invoice${stats.flagged > 1 ? 's' : ''} need attention)` : '';
       // Store reconciliations for CSV export (REC-330)
       window._reconciliations = reconciliations;
 
@@ -1363,7 +1386,7 @@
         : r.match_type === 'needs_review'
         ? '<span class="badge badge-review">Amount mismatch</span>'
         : r.match_type === 'semantic'
-        ? '<span class="badge badge-semantic">Semantic</span>'
+        ? '<span class="badge badge-semantic">AI Match</span>'
         : r.match_type === 'missing_contact'
         ? '<span class="badge badge-review">No Xero contact</span>'
         : '<span class="badge badge-unmatched">Unmatched</span>';
