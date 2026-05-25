@@ -11,16 +11,24 @@ const app = express();
 app.set('trust proxy', 1);
 const path = require("path");
 
-
+// Surface async crashes that would otherwise be invisible in production logs and
+// leave Passenger in a restart loop with no diagnostic.
+process.on("unhandledRejection", (reason) => {
+    console.error("[fatal] unhandledRejection:", reason && reason.message ? reason.message : reason);
+});
+process.on("uncaughtException", (err) => {
+    console.error("[fatal] uncaughtException:", err && err.message ? err.message : err);
+});
 
 (async () => {
     try {
         const mongoUri = process.env.MONGO_URI;
-        
+
         if (!mongoUri) {
-            throw new Error("MONGO_URI environment variable is not set. Please set it in your production environment variables or .env file.");
+            console.error("[startup] MONGO_URI is not set. DB-backed routes will return 5xx until it is configured.");
+            return;
         }
-        
+
         await mongoose.connect(mongoUri, {
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
@@ -28,9 +36,11 @@ const path = require("path");
         if (process.env.NODE_ENV !== 'production') console.log("MongoDB connected successfully");
         xeroPollingService.start();
     } catch (error) {
-        console.error("MongoDB connection failed"); // Don't log error.message — may contain credentials
-        process.exit(1); // Exit process if database connection fails
-   }   
+        // Stay up so the HTTP listener can still serve static assets, health checks,
+        // and clear error responses instead of dropping every request as a 500
+        // while cPanel/Passenger thrashes through restart loops.
+        console.error("[startup] MongoDB connection failed:", error && error.message ? error.message.replace(/mongodb(\+srv)?:\/\/[^@]*@/i, "mongodb$1://***@") : error);
+   }
 })()
 
 // EJS view engine configuration removed - we're serving React SPA now

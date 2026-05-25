@@ -1,8 +1,10 @@
 const mongoose = require("mongoose");
 
-const uri = process.env.MONGO_URI_2;
+// Fall back to MONGO_URI so the 2.0 connection still works when only the
+// primary URI is configured (matches what the warning historically promised).
+const uri = process.env.MONGO_URI_2 || process.env.MONGO_URI;
 if (!uri) {
-  console.warn("2.0 DB: No MONGO_URI_2 or MONGO_URI set. Set MONGO_URI_2 in .env for a separate 2.0 database.");
+  console.error("2.0 DB: Neither MONGO_URI_2 nor MONGO_URI is set. 2.0 endpoints will return 500.");
 }
 
 const conn = mongoose.createConnection(uri, {
