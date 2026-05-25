@@ -4,42 +4,44 @@ import pageStyle from "../scss/Pages.module.scss";
 import styles from "../scss/UserErrors.module.scss";
 
 const PAGE_SIZE = 20;
-const STATUS_OPTIONS = [
-  { value: "open", label: "New Report" },
-  { value: "reviewed_by_dev", label: "Under Review" },
-  { value: "in_dev", label: "Fix in Progress" },
-  { value: "fixed", label: "Ready for Your Review" },
-  { value: "closed", label: "Closed" },
+const AUTO_REFRESH_INTERVAL_MS = 45000;
+const STATUS_CONFIG = [
+  { value: "open", label: "New Report", rank: 0, editable: true },
+  { value: "reviewed_by_dev", label: "Under Review", rank: 1, editable: true },
+  { value: "in_dev", label: "Fix in Progress", rank: 2, editable: true },
+  { value: "fixed", label: "Ready for Your Review", rank: 3, editable: true },
+  { value: "approved_by_client", label: "Approved by You", rank: 4, editable: false },
+  { value: "closed", label: "Closed", rank: 5, editable: true },
 ];
 
-const STATUS_LABELS = {
-  open: "New Report",
-  reviewed_by_dev: "Under Review",
-  in_dev: "Fix in Progress",
-  fixed: "Ready for Your Review",
-  approved_by_client: "Approved by You",
-  closed: "Closed",
-};
+const STATUS_OPTIONS = STATUS_CONFIG.filter((status) => status.editable).map(
+  ({ value, label }) => ({ value, label })
+);
+const STATUS_LABELS = Object.fromEntries(
+  STATUS_CONFIG.map(({ value, label }) => [value, label])
+);
+const STATUS_SORT_ORDER = Object.fromEntries(
+  STATUS_CONFIG.map(({ value, rank }) => [value, rank])
+);
+const FILTERABLE_STATUSES = STATUS_CONFIG.map(({ value }) => value);
 
-const STATUS_SORT_ORDER = {
-  open: 0,
-  reviewed_by_dev: 1,
-  in_dev: 2,
-  fixed: 3,
-  approved_by_client: 4,
-  closed: 5,
-};
-
-function formatDate(dateString) {
-  if (!dateString) return "Unknown";
+function formatDate(dateString, fallback = "Unknown") {
+  if (!dateString) return fallback;
   const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) return "Unknown";
+  if (Number.isNaN(date.getTime())) return fallback;
   return date.toLocaleString();
+}
+
+function formatReportId(id) {
+  if (!id) return "#Unknown";
+  const value = String(id);
+  return value.length > 8 ? `#${value.slice(-8)}` : `#${value}`;
 }
 
 export default function UserErrors() {
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
   const [successMessage, setSuccessMessage] = useState("");
@@ -47,34 +49,61 @@ export default function UserErrors() {
   const [deletingId, setDeletingId] = useState(null);
   const [editing, setEditing] = useState(null);
   const [activeStatusFilter, setActiveStatusFilter] = useState("all");
+  const [lastLoadedAt, setLastLoadedAt] = useState(null);
 
   const hasPrev = page > 1;
   const hasNext = reports.length === PAGE_SIZE;
   const canManageReport = (report) => Boolean(report?.id);
 
-  const loadReports = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    setSuccessMessage("");
-    try {
-      const response = await fetch(
-        `/api/v1/report-error/db/list?page=${page}&limit=${PAGE_SIZE}`,
-        {
-          credentials: "include",
-        }
-      );
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.status !== "success") {
-        throw new Error(data.message || "Failed to load team error reports.");
+  const loadReports = useCallback(
+    async ({
+      background = false,
+      preserveMessages = false,
+      notifyOnError = true,
+    } = {}) => {
+      if (background) {
+        setIsRefreshing(true);
+      } else {
+        setLoading(true);
+        setError("");
       }
-      setReports(Array.isArray(data.items) ? data.items : []);
-    } catch (err) {
-      setError(err.message || "Failed to load team error reports.");
-      setReports([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [page]);
+      if (!preserveMessages) {
+        setSuccessMessage("");
+      }
+
+      try {
+        const response = await fetch(
+          `/api/v1/report-error/db/list?page=${page}&limit=${PAGE_SIZE}`,
+          {
+            credentials: "include",
+          }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.status !== "success") {
+          throw new Error(data.message || "Failed to load team error reports.");
+        }
+        setReports(Array.isArray(data.items) ? data.items : []);
+        setLastLoadedAt(new Date().toISOString());
+        if (background) {
+          setError("");
+        }
+      } catch (err) {
+        if (notifyOnError) {
+          setError(err.message || "Failed to load team error reports.");
+        }
+        if (!background) {
+          setReports([]);
+        }
+      } finally {
+        if (background) {
+          setIsRefreshing(false);
+        } else {
+          setLoading(false);
+        }
+      }
+    },
+    [page]
+  );
 
   useEffect(() => {
     try {
@@ -86,6 +115,17 @@ export default function UserErrors() {
 
   useEffect(() => {
     loadReports();
+  }, [loadReports]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      loadReports({ background: true, preserveMessages: true, notifyOnError: false });
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(interval);
+    };
   }, [loadReports]);
 
   function startEdit(report) {
@@ -121,20 +161,9 @@ export default function UserErrors() {
       if (!response.ok || data.status !== "success") {
         throw new Error(data.message || "Failed to update report.");
       }
-      setReports((prev) =>
-        prev.map((item) =>
-          item.id === editing.id
-            ? {
-                ...item,
-                message: trimmedMessage,
-                status: editing.status,
-                updatedAt: new Date().toISOString(),
-              }
-            : item
-        )
-      );
       setEditing(null);
-      setSuccessMessage("Report updated.");
+      setSuccessMessage("Report updated. Refreshing in the background...");
+      await loadReports({ background: true, preserveMessages: true });
     } catch (err) {
       setError(err.message || "Failed to update report.");
     } finally {
@@ -159,9 +188,9 @@ export default function UserErrors() {
       if (!response.ok || data.status !== "success") {
         throw new Error(data.message || "Failed to archive report.");
       }
-      setReports((prev) => prev.filter((item) => item.id !== report.id));
       if (editing?.id === report.id) setEditing(null);
-      setSuccessMessage("Report archived.");
+      setSuccessMessage("Report archived. Refreshing in the background...");
+      await loadReports({ background: true, preserveMessages: true });
     } catch (err) {
       setError(err.message || "Failed to archive report.");
     } finally {
@@ -186,21 +215,11 @@ export default function UserErrors() {
       if (!response.ok || data.status !== "success") {
         throw new Error(data.message || "Failed to approve report.");
       }
-      setReports((prev) =>
-        prev.map((item) =>
-          item.id === report.id
-            ? {
-                ...item,
-                status: "approved_by_client",
-                updatedAt: new Date().toISOString(),
-              }
-            : item
-        )
-      );
       if (editing?.id === report.id) {
         setEditing((prev) => (prev ? { ...prev, status: "approved_by_client" } : prev));
       }
-      setSuccessMessage("Report marked as approved.");
+      setSuccessMessage("Report marked as approved. Refreshing in the background...");
+      await loadReports({ background: true, preserveMessages: true });
     } catch (err) {
       setError(err.message || "Failed to approve report.");
     } finally {
@@ -246,6 +265,16 @@ export default function UserErrors() {
     return sortedReports.filter((report) => report?.status === activeStatusFilter);
   }, [activeStatusFilter, sortedReports]);
 
+  const summaryStats = useMemo(
+    () => [
+      { key: "total", label: "Reports on this page", value: statusCounts.total || 0, tone: "neutral" },
+      { key: "open", label: "New reports", value: statusCounts.open || 0, tone: "open" },
+      { key: "in_dev", label: "Fix in progress", value: statusCounts.in_dev || 0, tone: "in_dev" },
+      { key: "fixed", label: "Ready for review", value: statusCounts.fixed || 0, tone: "fixed" },
+    ],
+    [statusCounts]
+  );
+
   return (
     <main className={pageStyle.main}>
       <Link to="/" className={pageStyle.back}>
@@ -254,43 +283,78 @@ export default function UserErrors() {
         </svg>
         Back to home
       </Link>
-      <div className={pageStyle.top}>
-        <h1 className={styles.pageTitle}>Team Errors</h1>
-        <p>View all error reports submitted by your team, including status and attachments.</p>
-      </div>
+
+      <section className={styles.hero}>
+        <div>
+          <h1 className={styles.pageTitle}>Team Errors</h1>
+          <p className={styles.pageSubtitle}>
+            Track, update, and close user-reported issues in one professional workflow.
+          </p>
+        </div>
+        <div className={styles.heroActions}>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            onClick={() => loadReports({ background: true, preserveMessages: true })}
+            disabled={loading || isRefreshing}
+          >
+            {isRefreshing ? "Refreshing..." : "Refresh now"}
+          </button>
+          <p className={styles.refreshMeta}>
+            {isRefreshing
+              ? "Refreshing list in the background..."
+              : lastLoadedAt
+                ? `Last refreshed ${formatDate(lastLoadedAt)}`
+                : "Loading the latest reports..."}
+          </p>
+        </div>
+      </section>
 
       {error && <div className={pageStyle.errorMessage}>{error}</div>}
       {successMessage && <div className={pageStyle.successMessage}>{successMessage}</div>}
 
       {!loading && reports.length > 0 ? (
-        <section className={styles.controls}>
-          <p className={styles.sortHint}>
-            Sorted by status (new reports first), then most recently updated.
-          </p>
-          <div className={styles.filterChips}>
-            <button
-              type="button"
-              className={`${styles.filterChip} ${
-                activeStatusFilter === "all" ? styles.filterChipActive : ""
-              }`}
-              onClick={() => setActiveStatusFilter("all")}
-            >
-              All ({statusCounts.total || 0})
-            </button>
-            {Object.keys(STATUS_SORT_ORDER).map((status) => (
+        <>
+          <section className={styles.summaryGrid}>
+            {summaryStats.map((item) => (
+              <article
+                key={item.key}
+                className={`${styles.summaryCard} ${styles[`summary_${item.tone}`]}`}
+              >
+                <p>{item.label}</p>
+                <strong>{item.value}</strong>
+              </article>
+            ))}
+          </section>
+          <section className={styles.controls}>
+            <p className={styles.sortHint}>
+              Sorted by status (new reports first), then most recently updated.
+            </p>
+            <div className={styles.filterChips}>
               <button
-                key={status}
                 type="button"
                 className={`${styles.filterChip} ${
-                  activeStatusFilter === status ? styles.filterChipActive : ""
+                  activeStatusFilter === "all" ? styles.filterChipActive : ""
                 }`}
-                onClick={() => setActiveStatusFilter(status)}
+                onClick={() => setActiveStatusFilter("all")}
               >
-                {STATUS_LABELS[status] || status} ({statusCounts[status] || 0})
+                All ({statusCounts.total || 0})
               </button>
-            ))}
-          </div>
-        </section>
+              {FILTERABLE_STATUSES.map((status) => (
+                <button
+                  key={status}
+                  type="button"
+                  className={`${styles.filterChip} ${
+                    activeStatusFilter === status ? styles.filterChipActive : ""
+                  }`}
+                  onClick={() => setActiveStatusFilter(status)}
+                >
+                  {STATUS_LABELS[status] || status} ({statusCounts[status] || 0})
+                </button>
+              ))}
+            </div>
+          </section>
+        </>
       ) : null}
 
       {loading ? (
@@ -332,7 +396,10 @@ export default function UserErrors() {
               style={{ "--stagger-index": index }}
             >
               <div className={styles.cardHeader}>
-                <p className={styles.title}>{report.message || "Untitled error"}</p>
+                <div className={styles.cardTitleBlock}>
+                  <p className={styles.title}>{report.message || "Untitled error"}</p>
+                  <p className={styles.reportId}>{formatReportId(report.id)}</p>
+                </div>
                 <span
                   className={`${styles.statusBadge} ${
                     styles[`status_${report.status}`] || styles.status_open
@@ -345,7 +412,7 @@ export default function UserErrors() {
               <div className={styles.meta}>
                 <span>Created: {formatDate(report.createdAt)}</span>
                 <span>Updated: {formatDate(report.updatedAt || report.createdAt)}</span>
-                <span>User: {report.userName || "Unknown"}</span>
+                <span>Reported by: {report.userName || "Unknown"}</span>
                 <span>Screenshot: {report.hasScreenshot ? "Yes" : "No"}</span>
                 <span>Attachments: {report.attachmentsCount || 0}</span>
               </div>
