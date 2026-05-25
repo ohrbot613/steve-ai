@@ -84,6 +84,9 @@ export default function UserErrors() {
         }
         setReports(Array.isArray(data.items) ? data.items : []);
         setLastLoadedAt(new Date().toISOString());
+        if (background) {
+          setError("");
+        }
       } catch (err) {
         if (notifyOnError) {
           setError(err.message || "Failed to load team error reports.");
@@ -283,7 +286,7 @@ export default function UserErrors() {
 
       <section className={styles.hero}>
         <div>
-        <h1 className={styles.pageTitle}>Team Errors</h1>
+          <h1 className={styles.pageTitle}>Team Errors</h1>
           <p className={styles.pageSubtitle}>
             Track, update, and close user-reported issues in one professional workflow.
           </p>
@@ -300,7 +303,9 @@ export default function UserErrors() {
           <p className={styles.refreshMeta}>
             {isRefreshing
               ? "Refreshing list in the background..."
-              : `Last refreshed ${formatDate(lastLoadedAt, "just now")}`}
+              : lastLoadedAt
+                ? `Last refreshed ${formatDate(lastLoadedAt)}`
+                : "Loading the latest reports..."}
           </p>
         </div>
       </section>
