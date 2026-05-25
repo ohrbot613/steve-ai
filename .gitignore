@@ -30,3 +30,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Python artifacts
+__pycache__/
+*.pyc
