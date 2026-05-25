@@ -18,11 +18,13 @@ function fireConfettiFromElement(el) {
   });
 }
 
-function formatAmount(amount) {
+function formatUsdAmount(amount) {
   if (amount == null || typeof amount !== "number" || Number.isNaN(amount)) return "—";
-  return new Intl.NumberFormat("en-GB", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(amount);
 }
 
@@ -2051,18 +2053,18 @@ export default function SimpleApp() {
 
   const totals = [
     {
-      label: "Suppliers say we owe (£)",
-      value: formatAmount(suppliersSayWeOwe),
+      label: "Suppliers say we owe (USD)",
+      value: formatUsdAmount(suppliersSayWeOwe),
       valueClass: styles.totalsValueDefault,
     },
     {
-      label: "Xero says we owe (£)",
-      value: formatAmount(xeroSaysWeOwe),
+      label: "Xero says we owe (USD)",
+      value: formatUsdAmount(xeroSaysWeOwe),
       valueClass: styles.totalsValueDefault,
     },
     {
-      label: "Difference (£)",
-      value: difference != null ? `£${formatAmount(difference)}` : formatAmount(difference),
+      label: "Difference (USD)",
+      value: formatUsdAmount(difference),
       valueClass:
         difference != null
           ? difference === 0
