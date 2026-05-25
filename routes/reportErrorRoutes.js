@@ -46,6 +46,25 @@ function normalizeAttachments(attachments) {
     .filter((item) => item.name || item.data);
 }
 
+function getTrimmedText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function buildReportMessage(payload) {
+  const directMessage = getTrimmedText(payload?.message);
+  if (directMessage) return directMessage;
+
+  const title = getTrimmedText(payload?.title);
+  const context = getTrimmedText(payload?.context);
+
+  if (title && context) {
+    return `Title: ${title}\nContext: ${context}`;
+  }
+  if (title) return `Title: ${title}`;
+  if (context) return context;
+  return "";
+}
+
 function normalizeStatus(status) {
   const value = String(status || "").trim().toLowerCase();
   if (!value) return "open";
@@ -131,16 +150,23 @@ async function saveAttachmentsToDisk(attachments) {
 
 /**
  * POST /api/v1/report-error
- * Auth required (protect). Body: { message: string, screenshot?: string, attachments?: Array<{ name: string, data: string }> }
+ * Auth required (protect).
+ * Body: {
+ *   message?: string,
+ *   title?: string,
+ *   context?: string,
+ *   screenshot?: string,
+ *   attachments?: Array<{ name: string, data: string }>
+ * }
  * screenshot and attachments are data URLs (base64). Used by the frontend "Report error" button.
  */
 router.post(
   "/report-error",
   protect,
   tryCatchAsync(async (req, res) => {
-    const { message, screenshot, attachments } = req.body || {};
+    const { screenshot, attachments } = req.body || {};
     const dsn = process.env.SENTRY_DSN;
-    const trimmedMessage = typeof message === "string" ? message.trim() : "";
+    const trimmedMessage = buildReportMessage(req.body || {});
     const screenshotData = typeof screenshot === "string" ? screenshot : null;
     const attachmentList = normalizeAttachments(attachments);
     const hasScreenshot = Boolean(screenshotData);
