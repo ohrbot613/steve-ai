@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
+const { withKeyedLock, persistUploadedFile } = require("./uploadHelpers");
 const currencyToSymbolMap = require("currency-symbol-map/map");
 const { getCompaniesFromFile, getInvoicesFromFileWithAIVision } = require("./utilsController");
 const { getCompaniesFromFile: getCompaniesFromFileBeta, getInvoicesFromFileWithAIVision: getInvoicesFromFileWithAIVisionBeta, runWithConcurrency, runWithConcurrencyAndProgress } = require("./utilsControllerBeta");
@@ -380,17 +381,6 @@ function validateUpload(req, res) {
         return null;
     }
     return req.file;
-}
-
-function persistUploadedFile(buffer, fileName) {
-    const filesDir = path.join(__dirname, "..", "..", "..", "steve_files_do_not_delete");
-    if (!fs.existsSync(filesDir)) {
-        fs.mkdirSync(filesDir, { recursive: true });
-    }
-    const safeName = (fileName || "statement").replace(/[^a-zA-Z0-9._-]/g, "_");
-    const uniqueName = `${Date.now()}-${safeName}`;
-    fs.writeFileSync(path.join(filesDir, uniqueName), buffer);
-    return uniqueName;
 }
 
 function buildCandidateSuppliers(matchesAbove08) {
@@ -923,81 +913,104 @@ async function completeInvoiceFileUploadLogic(body, userId, options = {}) {
     const created = [];
     const statementIdsToCheck = new Set();
     const idNoLettersForMatch = (s) => String(s ?? "").replace(/[a-zA-Z]/g, "").trim();
-    let existingFromFile = await Invoice.find({ contactId, fromXero: false, isDeleted: { $ne: true } }).lean();
 
-    for (const fileInv of invoicesWithClosestMatches) {
-        const numbersToFind = [
-            fileInv.invoiceNumber,
-            ...(Array.isArray(fileInv.potentialInvoiceIds) ? fileInv.potentialInvoiceIds : []),
-        ].map((s) => String(s).trim()).filter(Boolean);
-        const canonicalNumber = fileInv.match?.length > 0
-            ? fileInv.match[0].invoice.invoiceNumber
-            : (fileInv.invoiceNumber ?? "");
-        if (!canonicalNumber.trim()) continue;
+    // Serialize per contactId so concurrent batch tasks for the same supplier
+    // don't race on the existingFromFile snapshot. Without this lock, two tasks
+    // can reassign each other's invoices and then the empty-statement cleanup
+    // below deletes a sibling task's freshly-created Statement, dropping one
+    // file from the visible batch (issues #67 / #68).
+    await withKeyedLock(`completeInvoiceFileUpload:${contactId}`, async () => {
+        let existingFromFile = await Invoice.find({ contactId, fromXero: false, isDeleted: { $ne: true } }).lean();
 
-        
-        const dateVal = parseInvoiceDate(fileInv.invoiceDate); // do NOT fall back to dateDue - leave invoice date blank if not present
-        const dueDateVal = parseInvoiceDate(fileInv.dateDue ?? fileInv.dueDate);
-        
-        const updatePayload = {
-            invoiceNumber: canonicalNumber.trim(),
-            amount: fileInv.amount != null ? Number(fileInv.amount) : null,
-            status: fileInv.paymentStatus === "paid" ? "paid" : "unpaid",
-            description: fileInv.activityDescription ?? null,
-            currency: toISO4217Currency(fileInv.currency),
-            date: dateVal,
-            dueDate: dueDateVal,
-            fromXero: false,
-            isDeleted: false,
-            statementId: statementId || null,
-        };
+        for (const fileInv of invoicesWithClosestMatches) {
+            const numbersToFind = [
+                fileInv.invoiceNumber,
+                ...(Array.isArray(fileInv.potentialInvoiceIds) ? fileInv.potentialInvoiceIds : []),
+            ].map((s) => String(s).trim()).filter(Boolean);
+            const canonicalNumber = fileInv.match?.length > 0
+                ? fileInv.match[0].invoice.invoiceNumber
+                : (fileInv.invoiceNumber ?? "");
+            if (!canonicalNumber.trim()) continue;
 
-        const canonicalDigits = idNoLettersForMatch(canonicalNumber);
-        const matchingExisting = existingFromFile.filter((ex) => {
-            if (numbersToFind.includes(ex.invoiceNumber)) return true;
-            if (canonicalDigits && idNoLettersForMatch(ex.invoiceNumber) === canonicalDigits) return true;
-            return false;
-        });
+            const dateVal = parseInvoiceDate(fileInv.invoiceDate); // do NOT fall back to dateDue - leave invoice date blank if not present
+            const dueDateVal = parseInvoiceDate(fileInv.dateDue ?? fileInv.dueDate);
 
-        let record;
-        if (matchingExisting.length > 0) {
-            const toUpdate = matchingExisting[0];
-            const extras = matchingExisting.slice(1);
-            if (toUpdate.statementId) statementIdsToCheck.add(toUpdate.statementId.toString());
-            for (const inv of extras) {
-                if (inv.statementId) statementIdsToCheck.add(inv.statementId.toString());
-            }
-            if (extras.length > 0) {
-                await Invoice.deleteMany({ _id: { $in: extras.map((e) => e._id) } });
-                existingFromFile = existingFromFile.filter((ex) => !extras.some((e) => e._id.equals(ex._id)));
-            }
-            record = await Invoice.findByIdAndUpdate(
-                toUpdate._id,
-                { $set: updatePayload },
-                { new: true, runValidators: true }
-            );
-        } else {
-            record = await Invoice.create({
-                ...updatePayload,
-                contactId,
+            const updatePayload = {
+                invoiceNumber: canonicalNumber.trim(),
+                amount: fileInv.amount != null ? Number(fileInv.amount) : null,
+                status: fileInv.paymentStatus === "paid" ? "paid" : "unpaid",
+                description: fileInv.activityDescription ?? null,
+                currency: toISO4217Currency(fileInv.currency),
+                date: dateVal,
+                dueDate: dueDateVal,
+                fromXero: false,
+                isDeleted: false,
+                statementId: statementId || null,
+            };
+
+            const canonicalDigits = idNoLettersForMatch(canonicalNumber);
+            const matchingExisting = existingFromFile.filter((ex) => {
+                if (numbersToFind.includes(ex.invoiceNumber)) return true;
+                if (canonicalDigits && idNoLettersForMatch(ex.invoiceNumber) === canonicalDigits) return true;
+                return false;
             });
-            existingFromFile.push({ invoiceNumber: record.invoiceNumber, _id: record._id, statementId: record.statementId });
+
+            let record;
+            if (matchingExisting.length > 0) {
+                const toUpdate = matchingExisting[0];
+                const extras = matchingExisting.slice(1);
+                if (toUpdate.statementId) statementIdsToCheck.add(toUpdate.statementId.toString());
+                for (const inv of extras) {
+                    if (inv.statementId) statementIdsToCheck.add(inv.statementId.toString());
+                }
+                if (extras.length > 0) {
+                    await Invoice.deleteMany({ _id: { $in: extras.map((e) => e._id) } });
+                    existingFromFile = existingFromFile.filter((ex) => !extras.some((e) => e._id.equals(ex._id)));
+                }
+                record = await Invoice.findByIdAndUpdate(
+                    toUpdate._id,
+                    { $set: updatePayload },
+                    { new: true, runValidators: true }
+                );
+            } else {
+                record = await Invoice.create({
+                    ...updatePayload,
+                    contactId,
+                });
+                existingFromFile.push({ invoiceNumber: record.invoiceNumber, _id: record._id, statementId: record.statementId });
+            }
+            created.push(record);
         }
-        created.push(record);
-    }
+
+        // If any statements had invoices deleted, drop statements that no longer have any invoices.
+        // Two protections, both targeting issues #67/#68 where 1 of N batch statements
+        // would silently disappear from tab 1:
+        //   1. Never delete our own statementId — defense-in-depth against any code path
+        //      that might somehow land it in statementIdsToCheck.
+        //   2. Never delete a recently-created statement (within RECENT_STATEMENT_MS).
+        //      Concurrent batch siblings (different contactId, so outside this lock, or
+        //      same contactId, so queued behind this lock) may have created statements
+        //      whose invoices we have just reassigned. Deleting those would drop one
+        //      file from the visible batch.
+        const ownStatementId = statementId ? statementId.toString() : null;
+        const RECENT_STATEMENT_MS = 10 * 60 * 1000;
+        for (const sid of statementIdsToCheck) {
+            if (ownStatementId && sid === ownStatementId) continue;
+            const stmt = await Statement.findById(sid).select("_id createdAt").lean();
+            if (!stmt) continue;
+            const ageMs = Date.now() - new Date(stmt.createdAt).getTime();
+            if (ageMs < RECENT_STATEMENT_MS) continue;
+            const remaining = await Invoice.countDocuments({
+                statementId: sid,
+                isDeleted: { $ne: true },
+            });
+            if (remaining === 0) {
+                await Statement.deleteOne({ _id: sid });
+            }
+        }
+    });
 
     const matchCount = invoicesWithClosestMatches.filter((inv) => inv.match?.length > 0).length;
-
-    // If any statements had invoices deleted, drop statements that no longer have any invoices
-    for (const sid of statementIdsToCheck) {
-        const remaining = await Invoice.countDocuments({
-            statementId: sid,
-            isDeleted: { $ne: true },
-        });
-        if (remaining === 0) {
-            await Statement.deleteOne({ _id: sid });
-        }
-    }
 
     // ids: s- for statement, i- for invoice (so batch can merge one log)
     const ids = [
@@ -1701,3 +1714,4 @@ exports.processOneStatementFile = async function processOneStatementFile(fileBuf
         return { success: false, error: err.message || String(err) };
     }
 };
+
