@@ -141,6 +141,221 @@ def format_supplier_overview(overview: dict) -> str:
     return "\n".join(lines)
 
 
+
+# ---- corrections -------------------------------------------------------------
+
+def _require_supplier(conn: sqlite3.Connection, supplier: int | str) -> dict:
+    if isinstance(supplier, int) or (isinstance(supplier, str) and supplier.isdigit()):
+        row = conn.execute("SELECT * FROM suppliers WHERE id = ?", (int(supplier),)).fetchone()
+    else:
+        return db_ops.get_supplier_by_alias(conn, str(supplier))
+    return {k: row[k] for k in row.keys()} if row else None
+
+
+def change_statement_supplier(
+    db_path: str | Path,
+    statement_id: int,
+    supplier: int | str,
+    *,
+    actor: str = "status_query",
+    note: Optional[str] = None,
+) -> dict:
+    """Move a statement to the correct supplier and audit the correction."""
+    from . import audit_logger
+
+    with db_ops.connect(db_path) as conn:
+        st = conn.execute("SELECT * FROM statements WHERE id = ?", (statement_id,)).fetchone()
+        if st is None:
+            raise ValueError(f"statement id {statement_id} not found")
+        sup = _require_supplier(conn, supplier)
+        if sup is None:
+            raise ValueError(f"supplier {supplier!r} not found")
+        old_supplier_id = st["supplier_id"]
+        conn.execute(
+            "UPDATE statements SET supplier_id = ? WHERE id = ?",
+            (sup["id"], statement_id),
+        )
+        audit_logger.log_event_conn(
+            conn,
+            actor=actor,
+            action=audit_logger.ACTION_CORRECTION_APPLIED,
+            entity_type="statement",
+            entity_id=str(statement_id),
+            payload={
+                "correction": "change_statement_supplier",
+                "statement_id": statement_id,
+                "old_supplier_id": old_supplier_id,
+                "new_supplier_id": sup["id"],
+                "note": note,
+            },
+        )
+    return {
+        "statement_id": statement_id,
+        "old_supplier_id": old_supplier_id,
+        "new_supplier_id": sup["id"],
+        "supplier_name": sup["name"],
+    }
+
+
+def delete_statement_invoice(
+    db_path: str | Path,
+    statement_invoice_id: int,
+    *,
+    actor: str = "status_query",
+    note: Optional[str] = None,
+) -> dict:
+    """Delete an incorrect statement invoice line and audit the correction."""
+    from . import audit_logger
+
+    with db_ops.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM statement_invoices WHERE id = ?",
+            (statement_invoice_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"statement invoice id {statement_invoice_id} not found")
+        payload_invoice = {k: row[k] for k in row.keys()}
+        # Remove dependent reconciliation rows for this statement line so open
+        # discrepancy views do not keep showing a deleted invoice.
+        deleted_recons = conn.execute(
+            "DELETE FROM reconciliations WHERE statement_invoice_id = ?",
+            (statement_invoice_id,),
+        ).rowcount
+        conn.execute("DELETE FROM statement_invoices WHERE id = ?", (statement_invoice_id,))
+        audit_logger.log_event_conn(
+            conn,
+            actor=actor,
+            action=audit_logger.ACTION_CORRECTION_APPLIED,
+            entity_type="statement_invoice",
+            entity_id=str(statement_invoice_id),
+            payload={
+                "correction": "delete_statement_invoice",
+                "deleted_invoice": payload_invoice,
+                "deleted_reconciliations": deleted_recons,
+                "note": note,
+            },
+        )
+    return {
+        "statement_invoice_id": statement_invoice_id,
+        "deleted_reconciliations": deleted_recons,
+    }
+
+
+def resolve_discrepancy(
+    db_path: str | Path,
+    reconciliation_id: int,
+    *,
+    resolution: str = "MATCHED",
+    actor: str = "status_query",
+    note: Optional[str] = None,
+) -> dict:
+    """Mark a discrepancy as manually resolved and audit the decision."""
+    from . import audit_logger
+
+    valid = set(STATUS_LABELS) | {"MATCHED"}
+    if resolution not in valid:
+        raise ValueError(f"resolution must be one of {sorted(valid)}, got {resolution!r}")
+    with db_ops.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM reconciliations WHERE id = ?",
+            (reconciliation_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"reconciliation id {reconciliation_id} not found")
+        old_status = row["match_status"]
+        reasoning = row["reasoning"] or ""
+        suffix = f"Manual resolution: {note or resolution}"
+        new_reasoning = (reasoning + "\n" + suffix).strip()
+        conn.execute(
+            """
+            UPDATE reconciliations
+            SET match_status = ?, match_method = 'manual', reasoning = ?
+            WHERE id = ?
+            """,
+            (resolution, new_reasoning, reconciliation_id),
+        )
+        audit_logger.log_event_conn(
+            conn,
+            actor=actor,
+            action=audit_logger.ACTION_CORRECTION_APPLIED,
+            entity_type="reconciliation",
+            entity_id=str(reconciliation_id),
+            payload={
+                "correction": "resolve_discrepancy",
+                "old_status": old_status,
+                "new_status": resolution,
+                "note": note,
+            },
+        )
+    return {
+        "reconciliation_id": reconciliation_id,
+        "old_status": old_status,
+        "new_status": resolution,
+    }
+
+
+def mark_reconciled_without_statement(
+    db_path: str | Path,
+    supplier: int | str,
+    xero_invoice_id: int | str,
+    *,
+    actor: str = "status_query",
+    note: Optional[str] = None,
+) -> dict:
+    """Manually mark a Xero invoice as reconciled even without a statement."""
+    from . import audit_logger
+
+    with db_ops.connect(db_path) as conn:
+        sup = _require_supplier(conn, supplier)
+        if sup is None:
+            raise ValueError(f"supplier {supplier!r} not found")
+        row = conn.execute(
+            """
+            SELECT * FROM xero_invoices
+            WHERE supplier_id = ? AND (id = ? OR xero_invoice_id = ? OR invoice_number = ?)
+            """,
+            (sup["id"], str(xero_invoice_id), str(xero_invoice_id), str(xero_invoice_id)),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"xero invoice {xero_invoice_id!r} not found for supplier {sup['name']}")
+        statement_id = db_ops.create_statement(
+            conn,
+            supplier_id=sup["id"],
+            file_path="manual:no_statement",
+            currency=row["currency"],
+            statement_total=row["amount"],
+            status="RECONCILED_WITHOUT_STATEMENT",
+        )
+        recon_id = db_ops.create_reconciliation(conn, statement_id, [{
+            "statement_invoice_id": None,
+            "xero_invoice_id": row["id"],
+            "match_status": "MATCHED",
+            "match_method": "manual",
+            "confidence": 1.0,
+            "amount_difference": 0.0,
+            "reasoning": note or "Manually marked reconciled without supplier statement.",
+        }])[0]
+        audit_logger.log_event_conn(
+            conn,
+            actor=actor,
+            action=audit_logger.ACTION_CORRECTION_APPLIED,
+            entity_type="reconciliation",
+            entity_id=str(recon_id),
+            payload={
+                "correction": "mark_reconciled_without_statement",
+                "supplier_id": sup["id"],
+                "xero_invoice_id": row["id"],
+                "statement_id": statement_id,
+                "note": note,
+            },
+        )
+    return {
+        "supplier_id": sup["id"],
+        "statement_id": statement_id,
+        "reconciliation_id": recon_id,
+        "xero_invoice_id": row["id"],
+    }
+
 # ---- CLI ---------------------------------------------------------------------
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -159,6 +374,33 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List all open discrepancies (optionally filter with --supplier)",
     )
+    group.add_argument(
+        "--change-statement-supplier",
+        type=int,
+        metavar="STATEMENT_ID",
+        help="Correction: move a statement to --to-supplier",
+    )
+    group.add_argument(
+        "--delete-invoice",
+        type=int,
+        metavar="STATEMENT_INVOICE_ID",
+        help="Correction: delete an incorrect statement invoice line",
+    )
+    group.add_argument(
+        "--resolve-discrepancy",
+        type=int,
+        metavar="RECONCILIATION_ID",
+        help="Correction: mark a discrepancy resolved",
+    )
+    group.add_argument(
+        "--reconcile-without-statement",
+        metavar="SUPPLIER",
+        help="Correction: mark a Xero invoice reconciled without a statement",
+    )
+    ap.add_argument("--to-supplier", help="Supplier name/id for --change-statement-supplier")
+    ap.add_argument("--xero-invoice", help="Xero invoice id/number for --reconcile-without-statement")
+    ap.add_argument("--resolution", default="MATCHED", help="Resolution status for --resolve-discrepancy")
+    ap.add_argument("--note", help="Human note to store with correction audit entry")
     ap.add_argument("--json", action="store_true", help="Emit JSON instead of text")
     return ap
 
@@ -166,7 +408,55 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     try:
-        if args.supplier:
+        if args.change_statement_supplier is not None:
+            if not args.to_supplier:
+                print("error: --to-supplier is required", file=sys.stderr)
+                return 1
+            result = change_statement_supplier(
+                args.db, args.change_statement_supplier, args.to_supplier, note=args.note,
+            )
+            if args.json:
+                json.dump(result, sys.stdout, indent=2, default=str)
+            else:
+                print(
+                    f"Statement {result['statement_id']} moved to "
+                    f"{result['supplier_name']} (supplier #{result['new_supplier_id']})."
+                )
+        elif args.delete_invoice is not None:
+            result = delete_statement_invoice(args.db, args.delete_invoice, note=args.note)
+            if args.json:
+                json.dump(result, sys.stdout, indent=2, default=str)
+            else:
+                print(
+                    f"Deleted statement invoice {result['statement_invoice_id']} "
+                    f"and {result['deleted_reconciliations']} related reconciliation row(s)."
+                )
+        elif args.resolve_discrepancy is not None:
+            result = resolve_discrepancy(
+                args.db, args.resolve_discrepancy, resolution=args.resolution, note=args.note,
+            )
+            if args.json:
+                json.dump(result, sys.stdout, indent=2, default=str)
+            else:
+                print(
+                    f"Resolved reconciliation {result['reconciliation_id']}: "
+                    f"{result['old_status']} -> {result['new_status']}."
+                )
+        elif args.reconcile_without_statement is not None:
+            if not args.xero_invoice:
+                print("error: --xero-invoice is required", file=sys.stderr)
+                return 1
+            result = mark_reconciled_without_statement(
+                args.db, args.reconcile_without_statement, args.xero_invoice, note=args.note,
+            )
+            if args.json:
+                json.dump(result, sys.stdout, indent=2, default=str)
+            else:
+                print(
+                    f"Marked Xero invoice {result['xero_invoice_id']} reconciled "
+                    f"without statement via reconciliation {result['reconciliation_id']}."
+                )
+        elif args.supplier:
             supplier = get_supplier_by_name(args.db, args.supplier)
             if supplier is None:
                 print(f"error: supplier {args.supplier!r} not found", file=sys.stderr)
@@ -211,6 +501,10 @@ if __name__ == "__main__":  # pragma: no cover
 
 __all__ = [
     "STATUS_LABELS",
+    "resolve_discrepancy",
+    "mark_reconciled_without_statement",
+    "delete_statement_invoice",
+    "change_statement_supplier",
     "format_open_discrepancies",
     "format_supplier_overview",
     "format_supplier_status",

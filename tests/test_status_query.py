@@ -139,3 +139,94 @@ class TestCLI:
         assert proc.returncode == 0, proc.stderr
         data = json.loads(proc.stdout)
         assert "suppliers" in data
+
+    def test_resolve_discrepancy_cli(self, db_with_data: Path, capsys):
+        row = status_query.get_open_discrepancies(db_with_data)[0]
+        code = status_query.main([
+            "--db", str(db_with_data),
+            "--resolve-discrepancy", str(row["reconciliation_id"]),
+            "--note", "supplier confirmed",
+        ])
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "Resolved reconciliation" in captured.out
+        remaining_ids = {r["reconciliation_id"] for r in status_query.get_open_discrepancies(db_with_data)}
+        assert row["reconciliation_id"] not in remaining_ids
+
+    def test_change_statement_supplier_cli_requires_target(self, db_with_data: Path, capsys):
+        code = status_query.main([
+            "--db", str(db_with_data), "--change-statement-supplier", "1",
+        ])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert "--to-supplier is required" in captured.err
+
+
+class TestCorrections:
+    def test_change_statement_supplier_updates_and_audits(self, db_with_data: Path):
+        with db_ops.connect(db_with_data) as conn:
+            sid = conn.execute("SELECT id FROM statements LIMIT 1").fetchone()["id"]
+            new_sup = db_ops.get_supplier_by_alias(conn, "Cairo Logistics")
+        result = status_query.change_statement_supplier(db_with_data, sid, new_sup["id"], note="wrong supplier")
+        assert result["new_supplier_id"] == new_sup["id"]
+        with db_ops.connect(db_with_data) as conn:
+            row = conn.execute("SELECT supplier_id FROM statements WHERE id = ?", (sid,)).fetchone()
+            audit_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM audit_log WHERE entity_type = 'statement' AND entity_id = ?",
+                (str(sid),),
+            ).fetchone()["c"]
+        assert row["supplier_id"] == new_sup["id"]
+        assert audit_count == 1
+
+    def test_delete_statement_invoice_removes_related_discrepancy(self, db: Path):
+        with db_ops.connect(db) as conn:
+            sup = db_ops.get_supplier_by_alias(conn, "Founding IP")
+            sid = db_ops.create_statement(conn, supplier_id=sup["id"], currency="GBP")
+            inv_id = db_ops.add_statement_invoices(conn, sid, [
+                {"invoice_number": "BAD-1", "amount": 10, "currency": "GBP"},
+            ])[0]
+            db_ops.create_reconciliation(conn, sid, [{
+                "statement_invoice_id": inv_id,
+                "match_status": "MISSING_FROM_XERO",
+                "match_method": "none",
+                "confidence": 0,
+                "amount_difference": 10,
+            }])
+        result = status_query.delete_statement_invoice(db, inv_id, note="duplicate line")
+        assert result["deleted_reconciliations"] == 1
+        with db_ops.connect(db) as conn:
+            inv_count = conn.execute("SELECT COUNT(*) AS c FROM statement_invoices WHERE id = ?", (inv_id,)).fetchone()["c"]
+            recon_count = conn.execute("SELECT COUNT(*) AS c FROM reconciliations WHERE statement_invoice_id = ?", (inv_id,)).fetchone()["c"]
+        assert inv_count == 0
+        assert recon_count == 0
+
+    def test_resolve_discrepancy_removes_from_open_view(self, db_with_data: Path):
+        row = status_query.get_open_discrepancies(db_with_data)[0]
+        result = status_query.resolve_discrepancy(
+            db_with_data, row["reconciliation_id"], note="confirmed by supplier"
+        )
+        assert result["new_status"] == "MATCHED"
+        remaining_ids = {r["reconciliation_id"] for r in status_query.get_open_discrepancies(db_with_data)}
+        assert row["reconciliation_id"] not in remaining_ids
+
+    def test_mark_reconciled_without_statement_creates_manual_record(self, db: Path):
+        with db_ops.connect(db) as conn:
+            sup = db_ops.get_supplier_by_alias(conn, "Founding IP")
+            db_ops.upsert_xero_invoices(conn, sup["id"], [{
+                "xero_invoice_id": "manual-x1",
+                "invoice_number": "MAN-1",
+                "amount": 125,
+                "currency": "GBP",
+                "status": "AUTHORISED",
+            }])
+        result = status_query.mark_reconciled_without_statement(
+            db, "Founding IP", "manual-x1", note="small supplier credit"
+        )
+        assert result["statement_id"]
+        assert result["reconciliation_id"]
+        with db_ops.connect(db) as conn:
+            st = conn.execute("SELECT status FROM statements WHERE id = ?", (result["statement_id"],)).fetchone()
+            recon = conn.execute("SELECT match_status, match_method FROM reconciliations WHERE id = ?", (result["reconciliation_id"],)).fetchone()
+        assert st["status"] == "RECONCILED_WITHOUT_STATEMENT"
+        assert recon["match_status"] == "MATCHED"
+        assert recon["match_method"] == "manual"
