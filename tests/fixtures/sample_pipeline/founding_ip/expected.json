@@ -1,0 +1,23 @@
+{
+  "currency": "GBP",
+  "expected_email_templates": [
+    "payment_confirmation"
+  ],
+  "expected_payment": {
+    "tier": "aggressive",
+    "total": 300.0
+  },
+  "expected_status_counts": {
+    "MATCHED": 2
+  },
+  "must_create_audit_actions": [
+    "parse",
+    "xero.invoices_loaded",
+    "reconciliation.run"
+  ],
+  "supplier": "Founding IP",
+  "terms_days": 30,
+  "terms_type": "net",
+  "tier": "aggressive",
+  "today": "2026-05-01"
+}

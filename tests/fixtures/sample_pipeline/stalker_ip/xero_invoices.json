@@ -1,0 +1,18 @@
+[
+  {
+    "xero_invoice_id": "xero-stk-2001",
+    "invoice_number": "STK-2001",
+    "amount": 150.0,
+    "currency": "GBP",
+    "status": "AUTHORISED",
+    "invoice_date": "2026-01-12"
+  },
+  {
+    "xero_invoice_id": "xero-stk-9999",
+    "invoice_number": "STK-9999",
+    "amount": 500.0,
+    "currency": "GBP",
+    "status": "AUTHORISED",
+    "invoice_date": "2026-01-30"
+  }
+]

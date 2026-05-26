@@ -491,11 +491,18 @@ def extract_invoices(
         seen.add(key)
         results.append(row)
 
+    table_rows_found = 0
     for tbl in tables or []:
         for row in tbl:
+            before = len(results)
             push(_row_to_parsed(row))
+            if len(results) > before:
+                table_rows_found += 1
 
-    if text:
+    # CSV/Excel/PDF table extraction often includes the same rows again in the
+    # raw text. Prefer clean table rows when we found any; scanning both can
+    # double-count invoice lines and misread CSV commas/dates as negative amounts.
+    if text and table_rows_found == 0:
         for line in text.splitlines():
             push(_extract_from_line(line))
 

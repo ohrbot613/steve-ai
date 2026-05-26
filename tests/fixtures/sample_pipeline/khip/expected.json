@@ -1,0 +1,22 @@
+{
+  "currency": "USD",
+  "expected_blocked_reason_contains": "CURRENCY_MISMATCH",
+  "expected_email_templates": [],
+  "expected_payment": {
+    "tier": "aggressive",
+    "total": 0.0
+  },
+  "expected_status_counts": {
+    "CURRENCY_MISMATCH": 1
+  },
+  "must_create_audit_actions": [
+    "parse",
+    "xero.invoices_loaded",
+    "reconciliation.run"
+  ],
+  "supplier": "KHIP",
+  "terms_days": 30,
+  "terms_type": "net",
+  "tier": "aggressive",
+  "today": "2026-05-01"
+}

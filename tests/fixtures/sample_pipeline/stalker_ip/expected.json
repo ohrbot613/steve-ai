@@ -1,0 +1,26 @@
+{
+  "currency": "GBP",
+  "expected_email_templates": [
+    "missing_invoices",
+    "payment_confirmation"
+  ],
+  "expected_payment": {
+    "tier": "aggressive",
+    "total": 150.0
+  },
+  "expected_status_counts": {
+    "MATCHED": 1,
+    "MISSING_FROM_STATEMENT": 1,
+    "MISSING_FROM_XERO": 1
+  },
+  "must_create_audit_actions": [
+    "parse",
+    "xero.invoices_loaded",
+    "reconciliation.run"
+  ],
+  "supplier": "Stalker IP",
+  "terms_days": 30,
+  "terms_type": "net",
+  "tier": "aggressive",
+  "today": "2026-05-01"
+}
