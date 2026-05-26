@@ -1,0 +1,10 @@
+[
+  {
+    "xero_invoice_id": "xero-khip-3001",
+    "invoice_number": "KHIP-3001",
+    "amount": 500.0,
+    "currency": "GBP",
+    "status": "AUTHORISED",
+    "invoice_date": "2026-01-22"
+  }
+]

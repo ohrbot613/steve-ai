@@ -1,0 +1,18 @@
+[
+  {
+    "xero_invoice_id": "xero-fnd-1001",
+    "invoice_number": "FND-1001",
+    "amount": 100.0,
+    "currency": "GBP",
+    "status": "AUTHORISED",
+    "invoice_date": "2026-01-15"
+  },
+  {
+    "xero_invoice_id": "xero-fnd-1002",
+    "invoice_number": "FND-1002",
+    "amount": 200.0,
+    "currency": "GBP",
+    "status": "AUTHORISED",
+    "invoice_date": "2026-01-20"
+  }
+]
